@@ -3,9 +3,12 @@
 ## Unreleased
 
 **修复**
-- `search_history_experience` 不传 `limit` 时现在默认取当前策略 `maxRecall`（此前被钳到 1，只返回单条）。
+- `dream_memory_search` 不传 `limit` 时现在默认取当前策略 `maxRecall`（此前被钳到 1，只返回单条）。
 - 回合菜单现在会真实检索并在命中跨会话节点时附带 teaser 提示（此前 teaser 触发链未接线，系统提示承诺的"命中历史"始终不出现）。
-- `run_dream_optimization` 的 `focus` 参数现在真正引导做梦的最薄弱指标选择（此前为空操作）。
+- `dream_memory_dream` 的 `focus` 参数现在真正引导做梦的最薄弱指标选择（此前为空操作）。
+
+**重构**
+- 工具名统一为 `dream_memory_` 前缀（原前缀混杂、不易阅读，且 `memory_` 无法与其他插件区分）：`commit_task_trace → dream_memory_commit`、`search_history_experience → dream_memory_search`、`inspect_node_detail → dream_memory_node`、`dream_status → dream_memory_status`、`switch_policy → dream_memory_policy`、`run_dream_optimization → dream_memory_dream`。菜单/系统提示/文档同步更新。
 
 ## v0.3.1 — 2026-09
 

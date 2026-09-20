@@ -28,7 +28,7 @@ type MetricKey = keyof ReplayMetrics & ("fileHitRate" | "failureAvoidRate" | "pr
 
 /**
  * Note that drives the candidates. Without `focus` it's the weakest metric;
- * with `focus` the requested aspect wins (matching the run_dream_optimization
+ * with `focus` the requested aspect wins (matching the dream_memory_dream
  * `focus` arg: file recall / failure avoid / precision / budget).
  */
 function noteFor(metrics: ReplayMetrics, weights: MemoryConfig["replayWeights"], focus?: string): string {

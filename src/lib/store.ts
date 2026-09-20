@@ -347,7 +347,7 @@ export class MemoryStore {
             return (
                 `在线评估退化：${policyId} 当选时 train=${policy.replayAtCreation.train.toFixed(3)}，` +
                 `当前 ${currentTrain.toFixed(3)}（差值超 ${gate.toFixed(3)}）。` +
-                (parent ? `建议回滚：switch_policy ${parent}` : "建议回滚到默认参数。")
+                (parent ? `建议回滚：dream_memory_policy ${parent}` : "建议回滚到默认参数。")
             )
         }
         return ""

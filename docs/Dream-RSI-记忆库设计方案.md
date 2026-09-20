@@ -214,9 +214,9 @@
 [Dream-RSI 记忆系统 · 可选动作]
 当前项目 {project_name} 已有 {N} 个历史决策节点。
 你现在可以选择：
-  1. commit_task_trace    — 把刚才这轮工作蒸馏成一个新节点（如果这轮有值得记住的探索）
-  2. search_history_experience — 搜一下历史上类似的坑/方案
-  3. run_dream_optimization    — 触发离线做梦，让记忆策略自我进化
+  1. dream_memory_commit    — 把刚才这轮工作蒸馏成一个新节点（如果这轮有值得记住的探索）
+  2. dream_memory_search — 搜一下历史上类似的坑/方案
+  3. dream_memory_dream    — 触发离线做梦，让记忆策略自我进化
   4. 什么都不做          — 直接回应用户
 
 建议：刚踩了坑、刚试出新方案、刚否掉一个设计时，值得 commit。
@@ -228,14 +228,14 @@
 
 | 工具 | 用途 | 输入 | 返回 |
 |---|---|---|---|
-| `commit_task_trace` | 把一轮工作蒸馏成新节点 | summary, files, outcome, score?, why? | 新 node_id |
-| `search_history_experience` | 检索历史经验 | query, files?, limit? | top-k 节点摘要 |
-| `inspect_node_detail` | 查看节点完整细节 | node_id | 节点完整字段 |
-| `run_dream_optimization` | 触发离线做梦 | focus? | dream run_id（后台跑） |
-| `dream_status` | 查看做梦进度/结果 | 无 | 最近一轮做梦详情 |
-| `switch_policy` | 切换策略版本 | policy_id | 切换结果 |
+| `dream_memory_commit` | 把一轮工作蒸馏成新节点 | summary, files, outcome, score?, why? | 新 node_id |
+| `dream_memory_search` | 检索历史经验 | query, files?, limit? | top-k 节点摘要 |
+| `dream_memory_node` | 查看节点完整细节 | node_id | 节点完整字段 |
+| `dream_memory_dream` | 触发离线做梦 | focus? | dream run_id（后台跑） |
+| `dream_memory_status` | 查看做梦进度/结果 | 无 | 最近一轮做梦详情 |
+| `dream_memory_policy` | 切换策略版本 | policy_id | 切换结果 |
 
-**关键设计**：`commit_task_trace` 不要求模型写结构化 JSON——模型用自然语言说，插件后台派小模型蒸馏成结构化节点（子 agent，不占主 token）。
+**关键设计**：`dream_memory_commit` 不要求模型写结构化 JSON——模型用自然语言说，插件后台派小模型蒸馏成结构化节点（子 agent，不占主 token）。
 
 ### 5.4 决策树存储（已实现：纯 JSON 文件，无数据库）
 
@@ -403,7 +403,7 @@ totalScore =
 ### 6.4 做梦循环（后台，模型触发）
 
 ```
-run_dream_optimization(focus?):
+dream_memory_dream(focus?):
   1. 取当前 active 策略 P*
   2. 读最近一次 dream_run 的 notes（上次哪项指标最差）
   3. 元 LLM 生成 M 个参数变体：
@@ -437,9 +437,9 @@ run_dream_optimization(focus?):
 回合结束 → 注入元提示词（工具菜单，非记忆）
     ↓
 模型自主选择：
-    ├─ commit_task_trace ──▶ 子模型蒸馏成结构化节点 ──▶ 写 nodes 表
-    ├─ search_history_experience ──▶ 用 active 策略排序历史节点 ──▶ 返回摘要
-    ├─ run_dream_optimization ──▶ 后台：
+    ├─ dream_memory_commit ──▶ 子模型蒸馏成结构化节点 ──▶ 写 nodes 表
+    ├─ dream_memory_search ──▶ 用 active 策略排序历史节点 ──▶ 返回摘要
+    ├─ dream_memory_dream ──▶ 后台：
     │       元 LLM 生成参数变体
     │       → 离线 replay 每个变体
     │       → 选最优，达标才上线
@@ -452,15 +452,15 @@ run_dream_optimization(focus?):
 
 ## 七、落地路线图
 
-### 阶段 1：节点存储 + commit_task_trace（1~2 天）
+### 阶段 1：节点存储 + dream_memory_commit（1~2 天）
 - SQLite 建表，决策树节点写入、父子关联
 - 子模型蒸馏：自然语言 → 结构化节点
 - 分支识别（延续 vs 分叉）
-- 实现 `search_history_experience` 基础检索（文件路径 + FTS）
+- 实现 `dream_memory_search` 基础检索（文件路径 + FTS）
 
 ### 阶段 2：查询工具（1~2 天）
-- `inspect_node_detail`
-- `search_history_experience` 接入参数化策略
+- `dream_memory_node`
+- `dream_memory_search` 接入参数化策略
 
 ### 阶段 3：回放模拟器（2~3 天）
 - `replay()` 纯函数实现
@@ -470,7 +470,7 @@ run_dream_optimization(focus?):
 ### 阶段 4：做梦循环 + 策略仓库（2~3 天）
 - 元 LLM 生成参数变体
 - 离线打分、择优、策略版本管理
-- `run_dream_optimization` 工具
+- `dream_memory_dream` 工具
 - 不退化阈值保护
 
 ### 阶段 5：回合结束元提示词注入
@@ -487,7 +487,7 @@ run_dream_optimization(focus?):
 | 与 ACP 共存还是独立 | **完全独立** | ACP 不暴露 hook，自己重写三层压缩成本太高；ACP 管会话内，插件管跨会话 |
 | 记忆自动注入还是模型主动调 | **模型主动调工具** | 不侵入主上下文，模型自主判断何时需要历史经验 |
 | 何时建节点 | **回合结束注入提示词，模型决定** | 不替模型做决定，避免无价值节点 |
-| 何时做梦 | **模型调 run_dream_optimization** | 后台执行，不阻塞编码；节点数不够时拒绝 |
+| 何时做梦 | **模型调 dream_memory_dream** | 后台执行，不阻塞编码；节点数不够时拒绝 |
 | 策略表示 | **6 个浮点数参数（MVP）** | 安全、可对比、不会生成恶意代码；后续再放开到函数级 |
 | 回放打分 | **时间线遍历 + 4 维指标加权** | 纯计算零成本，严格模拟"当时能看到什么" |
 | 不退化保证 | **epsilon 阈值，新策略必须明显更好才上线** | 对齐 Dream-RSI 原文性能下限 |
@@ -549,7 +549,7 @@ const server: Plugin = async (ctx) => {
       }
     },
     tool: {
-      commit_task_trace: tool({
+      dream_memory_commit: tool({
         description: "把本轮探索蒸馏成一个记忆节点（后台子模型回填）",
         args: {
           summary:  tool.schema.string().optional().describe("一句话概述，≤80字"),
@@ -562,11 +562,11 @@ const server: Plugin = async (ctx) => {
           return store.commit(args, raw)                          // 同步入队，后台蒸馏回填
         },
       }),
-      search_history_experience: tool({ /* 见 9.5 打分 */ }),
-      inspect_node_detail: tool({ /* node_id → 完整字段 */ }),
-      run_dream_optimization: tool({ /* focus? → 立即返回 run_id（后台排队） */ }),
-      dream_status: tool({ /* 最近一轮 dreaming 详情 */ }),
-      switch_policy: tool({ /* policy_id → 切换结果 */ }),
+      dream_memory_search: tool({ /* 见 9.5 打分 */ }),
+      dream_memory_node: tool({ /* node_id → 完整字段 */ }),
+      dream_memory_dream: tool({ /* focus? → 立即返回 run_id（后台排队） */ }),
+      dream_memory_status: tool({ /* 最近一轮 dreaming 详情 */ }),
+      dream_memory_policy: tool({ /* policy_id → 切换结果 */ }),
     },
     config: async (opencodeConfig) => {
       opencodeConfig.command ??= {}
@@ -575,7 +575,7 @@ const server: Plugin = async (ctx) => {
       opencodeConfig.experimental = {
         ...opencodeConfig.experimental,
         primary_tools: [...(opencodeConfig.experimental?.primary_tools ?? []),
-                         "search_history_experience"],   // 检索类进 primary，让模型更易触达
+                         "dream_memory_search"],   // 检索类进 primary，让模型更易触达
       }
     },
   }
@@ -592,8 +592,8 @@ const server: Plugin = async (ctx) => {
 菜单内容（≤200 token）：
 ```
 [记忆系统 · 可选动作] 项目 {name} 已积累 {N} 节点，当前策略 {ver}（replay train/valid 分）
-可选：1. commit_task_trace   2. search_history_experience
-     3. run_dream_optimization（节点≥20 且增量≥50 才有效）  4. 不操作，直接继续
+可选：1. dream_memory_commit   2. dream_memory_search
+     3. dream_memory_dream（节点≥20 且增量≥50 才有效）  4. 不操作，直接继续
 ```
 菜单尾部固定加一句"以上均可选，本回合无相关需求就忽略本提示"，防止模型每轮都调工具。
 
@@ -673,7 +673,7 @@ CREATE TABLE IF NOT EXISTS dream_runs (
 - `ftsMatch`：对 t.summary 做关键词抽取（去停用词，≤16 token），在 `nodes_fts` 上 `MATCH`，用 `bm25()` rank 归一为 `1 / (1 + |rank|)`。
 - `isRelevant(r, v)`（precision 用）：文件集合有交集 OR FTS 命中同类关键词。
 - `similar(r, v)`（failureAvoid 用）：文件集合有交集 OR 共享 error_message 提取出的失败关键词。
-- `search_history_experience` 返回格式：top-k 节点，每条 `node_id / turn_index / outcome / summary(≤200字)/ why(≤200字)`，总预算 ≤800 token，默认 limit=5。
+- `dream_memory_search` 返回格式：top-k 节点，每条 `node_id / turn_index / outcome / summary(≤200字)/ why(≤200字)`，总预算 ≤800 token，默认 limit=5。
 
 ### 9.6 元 LLM 两块提示词
 
@@ -761,7 +761,7 @@ CREATE TABLE IF NOT EXISTS dream_runs (
 
 ### 9.12 验收指标
 
-- 5 个真实编码场景下，`search_history_experience` 有效召回历史 ≥ 2 次；
+- 5 个真实编码场景下，`dream_memory_search` 有效召回历史 ≥ 2 次；
 - 连续 3 轮 dream 上线的策略，其 `replay_valid` 单调不降；
 - 菜单 + 工具描述给主上下文带来的常驻开销 < 上下文 1%；
 - commit 快路径（入队 + 返回 run_id）< 5s；单节点读写 < 50ms（本地 SQLite）。

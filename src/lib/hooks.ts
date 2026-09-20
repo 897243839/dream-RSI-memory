@@ -48,7 +48,7 @@ function lastUserIndex(messages: TransformMessage[]): number {
 function systemHelp(): string {
     return [
         "[dream-memory] 长期记忆工具（按需调用，非每回合必须）",
-        "开工前若怀疑过去做过类似任务，可用 search_history_experience 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 commit_task_trace 记录一条；当记忆节点足够多（≥20）时可 run_dream_optimization 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
+        "开工前若怀疑过去做过类似任务，可用 dream_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
     ].join("\n")
 }
 
@@ -64,7 +64,7 @@ export function createSystemPromptHandler(config: MemoryConfig): ((input: unknow
 /**
  * Lightweight teaser: search the last user message against the whole store and,
  * if the top hit comes from a *different* session, emit a one-line hint so the
- * model sees the promised "命中历史" trigger and follows up with search_history_experience.
+ * model sees the promised "命中历史" trigger and follows up with dream_memory_search.
  * Same-session nodes are skipped: reminding the model of its own recent work is noise.
  */
 function teaserFor(store: MemoryStore, queryText: string, files: string[], sessionID: string): string {

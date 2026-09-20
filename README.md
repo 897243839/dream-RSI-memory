@@ -15,9 +15,9 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 机制
 
-1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `commit_task_trace`
-   （把结论/踩坑记成决策树节点）、`search_history_experience`（开工前检索历史）、
-   或 `run_dream_optimization`（做梦）。
+1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `dream_memory_commit`
+   （把结论/踩坑记成决策树节点）、`dream_memory_search`（开工前检索历史）、
+   或 `dream_memory_dream`（做梦）。
 2. **检索**：7 个浮点参数（文件重合权重 / FTS 权重 / 成功加成 / 失败加成 /
    时衰半衰期 / 召回上限 / 最低分数）决定候选如何排序；失败节点天然高价值。
 3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
@@ -66,12 +66,12 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 | 工具 | 作用 |
 | --- | --- |
-| `commit_task_trace` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时后台跑小模型补全 |
-| `search_history_experience` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
-| `inspect_node_detail` | 查看节点详情 |
-| `dream_status` | 记忆库状态 + replay 指标 |
-| `switch_policy` | 手动切换检索策略 |
-| `run_dream_optimization` | 触发一次「做梦」优化策略 |
+| `dream_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时后台跑小模型补全 |
+| `dream_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
+| `dream_memory_node` | 查看节点详情 |
+| `dream_memory_status` | 记忆库状态 + replay 指标 |
+| `dream_memory_policy` | 手动切换检索策略 |
+| `dream_memory_dream` | 触发一次「做梦」优化策略 |
 
 回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
 （冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction

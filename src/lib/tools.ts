@@ -164,7 +164,7 @@ export function createTools(deps: {
                         (hit.node.files.length ? `\n  文件：${hit.node.files.slice(0, 3).join(", ")}` : ""),
                 )
             }
-            if (hits.length === 0) lines.push("  无结果。可先 commit_task_trace 记录当前局面，或换关键词/加文件路径重试。")
+            if (hits.length === 0) lines.push("  无结果。可先 dream_memory_commit 记录当前局面，或换关键词/加文件路径重试。")
             return lines.join("\n")
         },
     })
@@ -216,11 +216,11 @@ export function createTools(deps: {
     })
 
     return {
-        commit_task_trace: commitTool,
-        search_history_experience: searchTool,
-        inspect_node_detail: inspectTool,
-        dream_status: statusTool,
-        switch_policy: switchTool,
-        run_dream_optimization: dreamTool,
+        dream_memory_commit: commitTool,
+        dream_memory_search: searchTool,
+        dream_memory_node: inspectTool,
+        dream_memory_status: statusTool,
+        dream_memory_policy: switchTool,
+        dream_memory_dream: dreamTool,
     }
 }

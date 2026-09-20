@@ -38,8 +38,8 @@ const server: Plugin = async (input) => {
             cfg.command.memory = { template: "", description: "Dream-Memory：记忆库（stats / policy / show <nodeId>）" }
             cfg.experimental ??= {}
             cfg.experimental.primary_tools ??= []
-            if (!cfg.experimental.primary_tools.includes("search_history_experience")) {
-                cfg.experimental.primary_tools.push("search_history_experience")
+            if (!cfg.experimental.primary_tools.includes("dream_memory_search")) {
+                cfg.experimental.primary_tools.push("dream_memory_search")
             }
         },
         tool: createTools({ client: input.client, store, config, logger, collector, meta }),
