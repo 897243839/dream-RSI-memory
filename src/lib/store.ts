@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { Logger } from "./logger.js"
-import { clampParams, dedupe, nowIso, normalizeProjectPath } from "./utils.js"
+import { clampParams, dedupe, isRootPath, nowIso, normalizeProjectPath } from "./utils.js"
 import {
     DEFAULT_PARAMS,
     type CommitInput,
@@ -65,7 +65,33 @@ let tmpSeq = 0
 async function atomicWrite(target: string, content: string): Promise<void> {
     const tmp = `${target}.tmp-${process.pid}-${tmpSeq++}`
     await fs.writeFile(tmp, content, "utf8")
-    await fs.rename(tmp, target)
+    try {
+        await fs.rename(tmp, target)
+    } catch (error) {
+        // rename failed (e.g. target locked) — remove the temp file, rethrow
+        await fs.rm(tmp, { force: true }).catch(() => {})
+        throw error
+    }
+}
+
+/**
+ * Remove leftover `*.tmp-<pid>-<n>` files left by crashed/interrupted atomic
+ * writes in the given directory. Called for every write, so any stale temp
+ * from an earlier, unrelated write (e.g. an old index.json.tmp-*) is also
+ * swept even when that particular target is not being written this round.
+ */
+async function cleanupStaleTmp(dir: string): Promise<void> {
+    let names: string[] = []
+    try {
+        names = await fs.readdir(dir)
+    } catch {
+        return // directory missing — nothing to clean
+    }
+    await Promise.all(
+        names
+            .filter((name) => name.includes(".tmp-"))
+            .map((name) => fs.rm(join(dir, name), { force: true }).catch(() => {})),
+    )
 }
 
 function sessionFileName(sessionId: string): string {
@@ -263,6 +289,14 @@ export class MemoryStore {
         // turnIndex is the single source of truth for sequencing; rebuild in memory.
         data.nextTurnIndex = Object.values(data.nodes).reduce((max, n) => Math.max(max, n.turnIndex + 1), 0)
         data.order = Object.keys(data.nodes).sort((a, b) => data!.nodes[a].turnIndex - data!.nodes[b].turnIndex)
+
+        // Repair a persisted garbage rootPath (e.g. "/" stored by a bad startup):
+        // the live cwd is authoritative, overwrite and mark index dirty so the
+        // corrected value is flushed back to disk.
+        if (!data.rootPath || isRootPath(data.rootPath)) {
+            data.rootPath = rootPath
+            migrated = true
+        }
 
         const store = new MemoryStore(data, dir, indexFile, sessionsDir, logger)
         if (data.order.length === 0 || migrated) {
@@ -562,11 +596,16 @@ export class MemoryStore {
             .then(async () => {
                 if (partSnapshots.size > 0) {
                     await fs.mkdir(sessionsDir, { recursive: true })
+                    await cleanupStaleTmp(sessionsDir)
+                    await cleanupStaleTmp(dirname(indexFile))
                     for (const [key, content] of partSnapshots) {
                         await atomicWrite(join(sessionsDir, sessionFileName(key)), content)
                     }
                 }
-                if (indexSnapshot !== null) await atomicWrite(indexFile, indexSnapshot)
+                if (indexSnapshot !== null) {
+                    await cleanupStaleTmp(dirname(indexFile))
+                    await atomicWrite(indexFile, indexSnapshot)
+                }
             })
             .catch((error) => {
                 this.logger.error("persist failed", { file: indexFile, error: String(error) })

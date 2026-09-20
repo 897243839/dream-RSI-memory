@@ -13,7 +13,7 @@ import { GateRegistry } from "./lib/menu.js"
 import { MetaLlm } from "./lib/meta-llm.js"
 import { MemoryStore } from "./lib/store.js"
 import { createTools } from "./lib/tools.js"
-import { projectIdOf } from "./lib/utils.js"
+import { isRootPath, projectIdOf } from "./lib/utils.js"
 
 const server: Plugin = async (input) => {
     const config = resolveConfig(input)
@@ -21,6 +21,13 @@ const server: Plugin = async (input) => {
 
     const logger = new Logger(config.debug)
     const rootPath = input.worktree || input.directory
+    if (!rootPath || isRootPath(rootPath)) {
+        // A root "/" worktree is not a usable project root (seen when opencode
+        // starts without a real cwd): skip registration instead of creating a
+        // garbage store keyed by the root hash.
+        logger.warn("skip plugin: invalid rootPath", { rootPath })
+        return {}
+    }
     const projectId = projectIdOf(rootPath)
     const store = await MemoryStore.load(projectId, rootPath, config.dataDir, logger)
     logger.info("loaded", { projectId, nodes: store.count(), policy: store.activePolicy().policyId })

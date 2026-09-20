@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { basename, relative, resolve, sep } from "node:path"
+import { basename, isAbsolute, relative, resolve, sep } from "node:path"
 import { PARAM_CLAMPS, type RecallParams } from "./types.js"
 
 export function sha1Id(value: string): string {
@@ -8,6 +8,22 @@ export function sha1Id(value: string): string {
 
 export function projectIdOf(directory: string): string {
     return sha1Id(directory.toLowerCase())
+}
+
+/**
+ * True when the path is a filesystem root (e.g. "/", "C:\\", "\\\\server\\share")
+ * or otherwise too short to be a usable project working directory.
+ */
+export function isRootPath(path: string): boolean {
+    const trimmed = path.trim()
+    if (!trimmed) return true
+    if (trimmed === "/" || trimmed === "\\") return true
+    if (isAbsolute(trimmed)) {
+        // absolute path whose depth is exactly one: the root itself
+        const parts = trimmed.split(/[\\/]+/).filter(Boolean)
+        return parts.length <= 1
+    }
+    return false
 }
 
 export function nowIso(): string {
@@ -38,13 +54,17 @@ export function toPosix(input: string): string {
  */
 export function normalizeProjectPath(root: string, input: string): string | null {
     if (!input) return null
+    // ".." is never normalized away so that an escaped path cannot silently
+    // become an inside path: compare resolved physical paths instead of string
+    // prefixes. Additionally reject absolute results (relative() across drive
+    // letters on win32 returns an absolute path, not a ".."-prefixed one).
+    const rootAbs = resolve(root)
     const abs = resolve(root, input)
-    const rel = relative(root, abs)
+    const rel = relative(rootAbs, abs)
     if (rel === "" || rel === ".") return null
+    if (isAbsolute(rel)) return null
     if (rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("../")) return null
-    let out = toPosix(rel)
-    if (process.platform === "win32") out = out.toLowerCase()
-    return out
+    return toPosix(rel)
 }
 
 export function fileStem(file: string): string {

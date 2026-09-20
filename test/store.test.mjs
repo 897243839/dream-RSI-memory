@@ -172,6 +172,51 @@ test("rebuilds from session files when index.json is lost", async () => {
     assert.ok(existsSync(indexFile), "recovered index.json persisted on reload")
 })
 
+test("stale atomically-written tmp files are cleaned on next persist", async () => {
+    const config = baseConfig()
+    const store = await loadStore(config)
+    const projectDir = join(config.dataDir, "tproj")
+    const sessionsDir = join(projectDir, "sessions")
+    // establish the real session file name so leftovers target the writes that follow
+    store.commit({ summary: "seed", files: ["a.ts"], sessionId: "s", agentName: "build" })
+    await flush()
+    const sessionFiles = readdirSync(sessionsDir).filter((f) => f.endsWith(".json"))
+    assert.equal(sessionFiles.length, 1)
+    // plant leftovers simulating a crashed atomicWrite for both write targets
+    writeFileSync(join(sessionsDir, sessionFiles[0] + ".tmp-99999-1"), "stale", "utf8")
+    writeFileSync(join(projectDir, "index.json.tmp-99999-2"), "stale", "utf8")
+    // next commit triggers persist → cleanup runs against both targets
+    store.commit({ summary: "cleanup check", files: ["b.ts"], sessionId: "s", agentName: "build" })
+    await flush()
+
+    assert.equal(
+        readdirSync(sessionsDir).filter((f) => f.includes(".tmp-")).length,
+        0,
+        "session-file tmp leftovers must be removed",
+    )
+    assert.equal(
+        readdirSync(projectDir).filter((f) => f.startsWith("index.json.tmp-")).length,
+        0,
+        "index tmp leftovers must be removed",
+    )
+    assert.ok(existsSync(join(sessionsDir, sessionFiles[0])), "the session file itself must survive cleanup")
+})
+
+test("load repairs a garbage rootPath persisted by a bad startup", async () => {
+    const config = baseConfig()
+    const store = await loadStore(config)
+    commitN(store, 1, { sessionId: "sess-a" })
+    await flush()
+    const indexFile = join(config.dataDir, "tproj", "index.json")
+    const index = readJson(indexFile)
+    index.rootPath = "/"
+    writeFileSync(indexFile, JSON.stringify(index), "utf8")
+
+    const reloaded = await loadStore(config)
+    assert.equal(reloaded.getRootPath(), "C:/proj", "rootPath must be repaired from live cwd")
+    assert.equal(readJson(indexFile).rootPath, "C:/proj", "repair must be flushed back to index.json")
+})
+
 test("commit chains within the same session by default", async () => {
     const store = await loadStore()
     const a1 = store.commit({ summary: "one", files: ["a.ts"], sessionId: "sess-a", agentName: "build" })
