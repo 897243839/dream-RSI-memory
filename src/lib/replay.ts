@@ -1,9 +1,9 @@
 import type { MemoryStore } from "./store.js"
-import { fileOverlap, tokenSimilarity, tokenizeText } from "./scoring.js"
+import { FAILURE_SIM_THRESHOLD, fileOverlap, tokenSimilarity, tokenizeText } from "./scoring.js"
 import type { NodeRecord, RecallParams, ReplayMetrics, ReplayOptions, ReplayReport } from "./types.js"
 
 const RELEVANCE_THRESHOLD = 0.15
-const FAILURE_THRESHOLD = 0.1
+const FAILURE_THRESHOLD = FAILURE_SIM_THRESHOLD
 
 export function isRelevant(lookup: NodeRecord, target: NodeRecord): boolean {
     if (fileOverlap(lookup.files, target.files) > 0) return true

@@ -15,6 +15,7 @@ import {
     type RecallParams,
 } from "./types.js"
 import {
+    FAILURE_SIM_THRESHOLD,
     bm25Score,
     computeIdf,
     docTokenSize,
@@ -540,7 +541,7 @@ export class MemoryStore {
             const ov = fileOverlap(node.files, qFiles)
             const failureSimilar =
                 node.outcome === "failed" &&
-                (ov > 0 || tokenSimilarity(qErrorTokens, tokenizeText(node.errorMessage ?? "")) > 0.15)
+                (ov > 0 || tokenSimilarity(qErrorTokens, tokenizeText(node.errorMessage ?? "")) > FAILURE_SIM_THRESHOLD)
             const rec = recencyScore(nowTurn - node.turnIndex, p.recencyHalfLife)
             const score =
                 rec * (p.fileOverlapWeight * ov + p.ftsScoreWeight * fts) +

@@ -111,7 +111,12 @@ export function stripJsonc(source: string): string {
         }
         if (inString) {
             out += ch
-            if (ch === '"' && source[i - 1] !== "\\") inString = false
+            if (ch === '"') {
+                // a quote ends the string unless it is escaped: odd run of "\"
+                let backslashes = 0
+                for (let j = i - 1; j >= 0 && source[j] === "\\"; j--) backslashes++
+                if (backslashes % 2 === 0) inString = false
+            }
             continue
         }
         if (ch === '"') {

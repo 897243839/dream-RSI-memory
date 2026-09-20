@@ -62,3 +62,16 @@ test("stripJsonc removes comments and trailing commas", () => {
     const parsed = JSON.parse(stripJsonc('{ "a": 1, // plain\n "b": 2, }'))
     assert.deepEqual(parsed, { a: 1, b: 2 })
 })
+
+test("stripJsonc keeps escaped quotes inside strings", () => {
+    const src = '{ "msg": "he said \\"hi\\"", // comment\n "n": 1 }'
+    const parsed = JSON.parse(stripJsonc(src))
+    assert.equal(parsed.msg, 'he said "hi"')
+    assert.equal(parsed.n, 1)
+})
+
+test("stripJsonc keeps // inside quoted strings", () => {
+    const src = '{ "url": "https://x.io/a", "n": 1 }'
+    const parsed = JSON.parse(stripJsonc(src))
+    assert.equal(parsed.url, "https://x.io/a")
+})

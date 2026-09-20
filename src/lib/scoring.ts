@@ -33,7 +33,7 @@ export function tokenizePath(path: string): Map<string, number> {
         if (!token || token.length < 2) return
         counts.set(token, (counts.get(token) ?? 0) + 1)
     }
-    const parts = path.split("/")
+    const parts = path.split(/[\\/]/)
     const base = parts[parts.length - 1] ?? ""
     const stem = base.replace(/\.[^.]*$/, "").toLowerCase()
     bump(stem)
@@ -41,6 +41,9 @@ export function tokenizePath(path: string): Map<string, number> {
     for (const part of parts) bump(part.toLowerCase())
     return counts
 }
+
+/** Cosine-similarity gate for "the same failure" between two error texts. */
+export const FAILURE_SIM_THRESHOLD = 0.15
 
 export function mergeTokenMaps(...maps: Map<string, number>[]): Map<string, number> {
     const out = new Map<string, number>()
