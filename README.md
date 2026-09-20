@@ -1,0 +1,131 @@
+# dream-RSI-memory
+
+> 让 opencode 拥有会自我进化的长期记忆
+> A self-evolving long-term memory plugin for [opencode](https://opencode.ai).
+
+**Independent implementation of the Dream-RSI technique. This project is not
+affiliated with Google, Google DeepMind, or the authors of the Dream-RSI paper.**
+
+Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，检索策略以浮点参数表示；
+「做梦」时在严格时间线 holdout 上离线回放不同候选策略，只接受在 train 与 valid
+都稳健提升者 —— 因此策略**只会更好、不会退化**，且无需重新训练任何模型。
+
+- 论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
+- 官方项目页: https://dream-rsi.com
+- Design doc（详细方案）: [`docs/Dream-RSI-记忆库设计方案.md`](docs/Dream-RSI-记忆库设计方案.md)
+
+## 机制
+
+1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `commit_task_trace`
+   （把结论/踩坑记成决策树节点）、`search_history_experience`（开工前检索历史）、
+   或 `run_dream_optimization`（做梦）。
+2. **检索**：7 个浮点参数（文件重合权重 / FTS 权重 / 成功加成 / 失败加成 /
+   时衰半衰期 / 召回上限 / 最低分数）决定候选如何排序；失败节点天然高价值。
+3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
+   （文件命中率 / 失败规避率 / 精确率 / 召回预算）的加权总分，只有稳健提升
+   （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。
+4. **进化**：后台「馆藏官」小模型（可选）为不完整提交补全摘要与失败根因，
+   并可作为策略变异的启发式来源。
+
+## 安装
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+{
+    "plugin": [
+        "dream-rsi-memory"          // npm 包名
+    ]
+}
+```
+
+或加载本地构建产物（先 `npm run build`）：
+
+```jsonc
+{
+    "plugin": [
+        "D:/path/to/dream-rsi-memory/dist/index.js"
+    ]
+}
+```
+
+## 数据
+
+每个项目（按工作区路径哈希）一份，默认落盘在：
+`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-memory/<projectId>/memory.json`
+（单 JSON 文件 + 内存索引，无需 SQLite，兼容 opencode 内嵌 Node）。
+
+## 工具（模型按需调用）
+
+| 工具 | 作用 |
+| --- | --- |
+| `commit_task_trace` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时后台跑小模型补全 |
+| `search_history_experience` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
+| `inspect_node_detail` | 查看节点详情 |
+| `dream_status` | 记忆库状态 + replay 指标 |
+| `switch_policy` | 手动切换检索策略 |
+| `run_dream_optimization` | 触发一次「做梦」优化策略 |
+
+回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
+（冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction
+的请求永远不会被注入）。
+
+## 命令
+
+- `/dream status`、`/dream run`
+- `/memory stats`、`/memory policy`、`/memory show <nodeId>`
+
+## 配置（可选）
+
+任一位置（按优先级）放置 `dream-memory.jsonc` / `dream-memory.json`：
+`$OPENCODE_CONFIG_DIR/` → 项目 `.opencode/` → 项目根 → `~/.config/opencode/`。
+
+```jsonc
+{
+    "debug": true,
+    "menu": {
+        "enabled": true,
+        "cooldownTurns": 2,      // 两次注入之间最少用户回合数
+        "forceEveryTurns": 5,    // 无新节点时最多隔几回合强制出现
+        "maxTokensHint": 200
+    },
+    "dream": {
+        "enabled": true,
+        "minNodes": 20,          // 节点数不足时拒绝做梦
+        "trainRatio": 0.8,       // holdout 切分比例
+        "epsilon": 0.005,        // 不退化保证：valid 需 ≥ 基线 + ε
+        "candidateCount": 3
+    },
+    "replayWeights": {
+        "fileHitRate": 0.35,
+        "failureAvoidRate": 0.25,
+        "precision": 0.25,
+        "recallBudget": 0.15
+    },
+    // 后台「馆藏官」小模型（可选，默认关闭；开启后 commit 会自动补全摘要/根因）
+    "distill": {
+        "enabled": true,
+        "providerID": "anthropic",
+        "modelID": "claude-3-5-haiku-latest",
+        "maxMaterialChars": 6000,
+        "timeoutMs": 120000
+    }
+}
+```
+
+## 开发
+
+```sh
+npm install          # 仅需要 @opencode-ai/plugin、@types/node、typescript
+npm run typecheck
+npm run build        # 产物在 dist/
+```
+
+## 致谢
+
+- 方法来自论文 Dream-RSI（arXiv:2609.14858），本仓库为**独立实现**，与官方及作者无关。
+- 插件架构组织方式参考了 [opencode-acp](https://github.com/xcodebuild/opencode-acp)
+  （AGPL-3.0）对 OpenCode Plugin API 的用法，代码为独立编写。
+
+## License
+
+Apache-2.0。见 [LICENSE](LICENSE)。
