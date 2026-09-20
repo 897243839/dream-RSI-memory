@@ -1,4 +1,4 @@
-import type { Hooks, Plugin } from "@opencode-ai/plugin"
+import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin"
 import { FileCollector } from "./lib/capture.js"
 import { resolveConfig } from "./lib/config.js"
 import {
@@ -51,4 +51,7 @@ const server: Plugin = async (input) => {
     return hooks
 }
 
-export default server
+export default {
+    id: "dream-memory",
+    server,
+} satisfies PluginModule

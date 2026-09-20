@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.1 — 2026-09
+
+插件入口改为新版 V1 对象格式（`export default { id, server }`）。
+
+- 修复 file 插件被 opencode 判定「插件名字不正确」：新版加载器要求 file 插件显式导出 `id`（`resolvePluginId`：`Path plugin X must export id`），npm 插件名来自 package.json 故 `opencode-acp` 正常。
+- 新增 `test/entry.test.mjs`：断言 V1 形状（`id` / `server` / 无 `tui`）与隔离项目下 hooks 装配（共 2 项）。
+
 ## v0.3.0 — 2026-09
 
 存储优化：不再按项目保存单个大型 JSON。
