@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { commitN, loadStore, baseConfig } from "./helpers.mjs"
 
@@ -148,6 +148,41 @@ test("migrates a legacy v1 memory.json into the v2 layout", async () => {
     const reloaded = await loadStore(config)
     assert.equal(reloaded.count(), 1)
     assert.equal(reloaded.search("legacy", []).length, 1)
+})
+
+test("rebuilds from session files when index.json is lost", async () => {
+    const config = baseConfig()
+    const store = await loadStore(config)
+    const ids = commitN(store, 3, { sessionId: "sess-a", summary: "alpha billing fix" })
+    const last = store.commit({ summary: "beta db migration", files: ["src/db.ts"], sessionId: "sess-b", agentName: "build" })
+    await flush()
+
+    const indexFile = join(config.dataDir, "tproj", "index.json")
+    assert.ok(existsSync(indexFile), "precondition: index.json exists")
+    rmSync(indexFile, { force: true })
+
+    const recovered = await loadStore(config)
+    assert.equal(recovered.count(), 4, "all nodes recovered from sessions/")
+    const summaries = recovered.sortedNodes().map((n) => n.summary)
+    assert.ok(summaries.includes("alpha billing fix"))
+    assert.ok(summaries.includes("beta db migration"))
+    assert.deepEqual(recovered.latestNode().files, ["src/db.ts"])
+    assert.equal(recovered.latestNode().parentId, undefined, "cross-session chain must not survive recovery either")
+    // recovered index must be persisted so the next load hits the V2 path
+    assert.ok(existsSync(indexFile), "recovered index.json persisted on reload")
+})
+
+test("commit chains within the same session by default", async () => {
+    const store = await loadStore()
+    const a1 = store.commit({ summary: "one", files: ["a.ts"], sessionId: "sess-a", agentName: "build" })
+    const a2 = store.commit({ summary: "two", files: ["b.ts"], sessionId: "sess-a", agentName: "build" })
+    // a different session, no explicit parentId → must NOT inherit sess-a's latest
+    const b1 = store.commit({ summary: "three", files: ["c.ts"], sessionId: "sess-b", agentName: "build" })
+    const b2 = store.commit({ summary: "four", files: ["d.ts"], sessionId: "sess-b", agentName: "build" })
+    assert.equal(a2.parentId, a1.nodeId)
+    assert.equal(b1.parentId, undefined, "cross-session must not auto-chain")
+    assert.equal(b2.parentId, b1.nodeId)
+    assert.equal(store.latestNode().nodeId, b2.nodeId)
 })
 
 test("reload round-trips turn order across sessions", async () => {
