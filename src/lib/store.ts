@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { join } from "node:path"
 import type { Logger } from "./logger.js"
@@ -39,6 +39,43 @@ interface StoreData {
     dreamRuns: Record<string, DreamRunRecord>
 }
 
+/** On-disk format v2: a small per-project index + one file per session. */
+const DISK_VERSION = 2
+const SESSION_DIR = "sessions"
+
+interface IndexFile {
+    version: typeof DISK_VERSION
+    projectId: string
+    rootPath: string
+    createdAt: string
+    activePolicyId: string
+    policies: Record<string, PolicyRecord>
+    dreamRuns: Record<string, DreamRunRecord>
+}
+
+interface SessionPart {
+    version: typeof DISK_VERSION
+    sessionId: string
+    nodes: NodeRecord[]
+}
+
+let tmpSeq = 0
+/** Atomic replace: write to a unique temp name in the same dir, then rename. */
+async function atomicWrite(target: string, content: string): Promise<void> {
+    const tmp = `${target}.tmp-${process.pid}-${tmpSeq++}`
+    await fs.writeFile(tmp, content, "utf8")
+    await fs.rename(tmp, target)
+}
+
+function sessionFileName(sessionId: string): string {
+    const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "unknown"
+    return `${safe}-${createHash("sha1").update(sessionId).digest("hex").slice(0, 8)}.json`
+}
+
+function sessionKeyOf(node: NodeRecord): string {
+    return node.sessionId || "unknown"
+}
+
 function makePolicy(policyId: string, params: RecallParams, dreamRound: number, parent?: string): PolicyRecord {
     return {
         policyId,
@@ -58,30 +95,88 @@ function bm25Normalized(bm25: number): number {
 export class MemoryStore {
     private replayCache: { at: number; train?: number; valid?: number } | null = null
     /** Serialized write queue: snapshots are taken synchronously at call time so
-     *  concurrent mutators never lose updates, and the shared .tmp file is never
-     *  written by two flushes at once. */
+     *  concurrent mutators never lose updates. Per-file tmp names keep flushes
+     *  from ever trampling each other. */
     private writeChain: Promise<void> = Promise.resolve()
+    private readonly sessionsDir: string
+    /** Live per-session node groups (values reference the same objects as data.nodes). */
+    private readonly sessionNodes = new Map<string, NodeRecord[]>()
+    private readonly dirtySessions = new Set<string>()
+    private indexDirty = false
 
     private constructor(
         private readonly data: StoreData,
-        private readonly file: string,
+        private readonly dir: string,
+        private readonly indexFile: string,
+        sessionsDir: string,
         private readonly logger: Logger,
-    ) {}
+    ) {
+        this.sessionsDir = sessionsDir
+        for (const node of Object.values(data.nodes)) this.appendToSession(node)
+    }
+
+    private appendToSession(node: NodeRecord): void {
+        const key = sessionKeyOf(node)
+        const list = this.sessionNodes.get(key)
+        if (list) list.push(node)
+        else this.sessionNodes.set(key, [node])
+    }
 
     static async load(projectId: string, rootPath: string, dataDir: string, logger: Logger): Promise<MemoryStore> {
         const dir = join(dataDir, projectId)
-        const file = join(dir, "memory.json")
+        const indexFile = join(dir, "index.json")
+        const sessionsDir = join(dir, SESSION_DIR)
         await fs.mkdir(dir, { recursive: true })
 
         let data: StoreData | null = null
-        try {
-            const raw = await fs.readFile(file, "utf8")
-            const parsed = JSON.parse(raw) as StoreData
-            if (parsed.version === 1 && parsed.nodes && parsed.order && parsed.policies && parsed.activePolicyId) {
-                data = parsed
+        let migrated = false
+
+        // V2: small index + per-session files.
+        if (data === null) {
+            try {
+                const index = JSON.parse(await fs.readFile(indexFile, "utf8")) as IndexFile
+                if (index.version === DISK_VERSION && index.policies && index.activePolicyId) {
+                    data = {
+                        version: 1,
+                        projectId: index.projectId,
+                        rootPath: index.rootPath,
+                        createdAt: index.createdAt,
+                        nextTurnIndex: 0,
+                        nodes: {},
+                        order: [],
+                        policies: index.policies,
+                        activePolicyId: index.activePolicyId,
+                        dreamRuns: index.dreamRuns,
+                    }
+                    const files = await fs.readdir(sessionsDir).catch(() => [] as string[])
+                    for (const file of files) {
+                        if (!file.endsWith(".json")) continue
+                        try {
+                            const part = JSON.parse(await fs.readFile(join(sessionsDir, file), "utf8")) as SessionPart
+                            if (part?.version !== DISK_VERSION || !Array.isArray(part.nodes)) continue
+                            for (const node of part.nodes) if (node?.nodeId) data.nodes[node.nodeId] = node
+                        } catch {
+                            // Skip a single corrupt session part; the rest still loads.
+                        }
+                    }
+                }
+            } catch {
+                data = null
             }
-        } catch {
-            data = null
+        }
+
+        // V1 migration: the old single per-project memory.json.
+        if (data === null) {
+            const legacyFile = join(dir, "memory.json")
+            try {
+                const legacy = JSON.parse(await fs.readFile(legacyFile, "utf8")) as StoreData
+                if (legacy.version === 1 && legacy.nodes && legacy.order && legacy.policies && legacy.activePolicyId) {
+                    data = legacy
+                    migrated = true
+                }
+            } catch {
+                data = null
+            }
         }
 
         if (data === null) {
@@ -98,17 +193,26 @@ export class MemoryStore {
                 activePolicyId: defaultPolicy.policyId,
                 dreamRuns: {},
             }
-            const store = new MemoryStore(data, file, logger)
-            await store.persist()
-            return store
         }
 
         if (!data.policies[data.activePolicyId]) {
             const fallback = makePolicy(data.activePolicyId, DEFAULT_PARAMS, 0)
             data.policies[data.activePolicyId] = { ...fallback, isActive: true }
         }
-        data.order = [...data.order].sort((a, b) => (data!.nodes[a]?.turnIndex ?? 0) - (data!.nodes[b]?.turnIndex ?? 0))
-        return new MemoryStore(data, file, logger)
+
+        // turnIndex is the single source of truth for sequencing; rebuild in memory.
+        data.nextTurnIndex = Object.values(data.nodes).reduce((max, n) => Math.max(max, n.turnIndex + 1), 0)
+        data.order = Object.keys(data.nodes).sort((a, b) => data!.nodes[a].turnIndex - data!.nodes[b].turnIndex)
+
+        const store = new MemoryStore(data, dir, indexFile, sessionsDir, logger)
+        if (data.order.length === 0 || migrated) {
+            // Fresh install or legacy conversion: materialize the v2 layout.
+            for (const key of store.sessionNodes.keys()) store.dirtySessions.add(key)
+            store.indexDirty = true
+            await store.persist()
+            if (migrated) await fs.rename(join(dir, "memory.json"), join(dir, "memory.json.bak")).catch(() => {})
+        }
+        return store
     }
 
     getProjectId(): string {
@@ -149,6 +253,7 @@ export class MemoryStore {
         if (!next) return undefined
         for (const p of Object.values(this.data.policies)) p.isActive = p.policyId === policyId
         this.data.activePolicyId = policyId
+        this.indexDirty = true
         void this.persist()
         return next
     }
@@ -189,6 +294,8 @@ export class MemoryStore {
 
         this.data.nodes[nodeId] = node
         this.data.order.push(nodeId)
+        this.appendToSession(node)
+        this.dirtySessions.add(sessionKeyOf(node))
         this.replayCache = null
         void this.persist()
         return node
@@ -197,7 +304,15 @@ export class MemoryStore {
     patchNode(nodeId: string, patch: Partial<NodeRecord>): NodeRecord | undefined {
         const node = this.data.nodes[nodeId]
         if (!node) return undefined
+        const oldKey = sessionKeyOf(node)
         Object.assign(node, patch)
+        if (sessionKeyOf(node) !== oldKey) {
+            // A node moved sessions: rebuild the group index.
+            this.sessionNodes.clear()
+            for (const n of Object.values(this.data.nodes)) this.appendToSession(n)
+            this.dirtySessions.add(oldKey)
+        }
+        this.dirtySessions.add(sessionKeyOf(node))
         this.replayCache = null
         void this.persist()
         return node
@@ -219,6 +334,7 @@ export class MemoryStore {
         const policy = this.data.policies[policyId]
         if (!policy) return
         if (meta.replayAtCreation) policy.replayAtCreation = meta.replayAtCreation
+        this.indexDirty = true
         void this.persist()
     }
 
@@ -239,6 +355,7 @@ export class MemoryStore {
 
     recordDream(run: DreamRunRecord): void {
         this.data.dreamRuns[run.runId] = run
+        this.indexDirty = true
         void this.persist()
     }
 
@@ -246,6 +363,7 @@ export class MemoryStore {
         const run = this.data.dreamRuns[runId]
         if (!run) return
         Object.assign(run, patch)
+        this.indexDirty = true
         void this.persist()
     }
 
@@ -342,16 +460,48 @@ export class MemoryStore {
         return this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit, minScore: opts.minScore })
     }
 
+    private buildIndex(): IndexFile {
+        return {
+            version: DISK_VERSION,
+            projectId: this.data.projectId,
+            rootPath: this.data.rootPath,
+            createdAt: this.data.createdAt,
+            activePolicyId: this.data.activePolicyId,
+            policies: this.data.policies,
+            dreamRuns: this.data.dreamRuns,
+        }
+    }
+
     private async persist(): Promise<void> {
-        const snapshot = JSON.stringify(this.data)
+        const sessionDirty = [...this.dirtySessions]
+        const needIndex = this.indexDirty
+        this.dirtySessions.clear()
+        this.indexDirty = false
+        if (sessionDirty.length === 0 && !needIndex) return this.writeChain
+
+        // Snapshots are taken synchronously at call time so queued writes cannot
+        // lose updates made between the snapshot and the actual flush.
+        const partSnapshots = new Map<string, string>()
+        for (const key of sessionDirty) {
+            const nodes = (this.sessionNodes.get(key) ?? []).filter((n) => sessionKeyOf(n) === key)
+            partSnapshots.set(key, JSON.stringify({ version: DISK_VERSION, sessionId: key, nodes } satisfies SessionPart))
+        }
+        const indexSnapshot = needIndex ? JSON.stringify(this.buildIndex()) : null
+
+        const sessionsDir = this.sessionsDir
+        const indexFile = this.indexFile
         this.writeChain = this.writeChain
             .then(async () => {
-                const tmp = this.file + ".tmp"
-                await fs.writeFile(tmp, snapshot, "utf8")
-                await fs.rename(tmp, this.file)
+                if (partSnapshots.size > 0) {
+                    await fs.mkdir(sessionsDir, { recursive: true })
+                    for (const [key, content] of partSnapshots) {
+                        await atomicWrite(join(sessionsDir, sessionFileName(key)), content)
+                    }
+                }
+                if (indexSnapshot !== null) await atomicWrite(indexFile, indexSnapshot)
             })
             .catch((error) => {
-                this.logger.error("persist failed", { file: this.file, error: String(error) })
+                this.logger.error("persist failed", { file: indexFile, error: String(error) })
             })
         return this.writeChain
     }

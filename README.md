@@ -50,8 +50,17 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 ## 数据
 
 每个项目（按工作区路径哈希）一份，默认落盘在：
-`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-memory/<projectId>/memory.json`
-（单 JSON 文件 + 内存索引，无需 SQLite，兼容 opencode 内嵌 Node）。
+`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-memory/<projectId>/`
+纯 JSON、无数据库。目录结构：
+
+```
+<projectId>/
+├─ index.json                  # 小型索引：项目元信息 + 检索策略 + 做梦记录
+└─ sessions/<会话>.json         # 按会话拆分：每个会话一个文件，仅含该会话的记忆节点
+```
+
+写入时只重写对应会话文件与小型索引，不再每次全量重写整个项目；旧版单个 `memory.json`
+在启动时自动迁移为 v2 布局（原文件改名 `memory.json.bak`）。
 
 ## 工具（模型按需调用）
 

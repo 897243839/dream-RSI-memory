@@ -1,6 +1,16 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { commitN, loadStore } from "./helpers.mjs"
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { join } from "node:path"
+import { commitN, loadStore, baseConfig } from "./helpers.mjs"
+
+async function flush() {
+    await new Promise((r) => setTimeout(r, 50))
+}
+
+function readJson(file) {
+    return JSON.parse(readFileSync(file, "utf8"))
+}
 
 test("commit chains parent/branch and keeps turn order", async () => {
     const store = await loadStore()
@@ -61,4 +71,94 @@ test("lastNodeCommittedAtMs + watchdogNotice", async () => {
     assert.ok(store.watchdogNotice("p-default", 0.5, 0.02).includes("退化"))
     assert.equal(store.watchdogNotice("p-default", 0.95, 0.02), "")
     assert.equal(store.watchdogNotice("nope", 0.5, 0.02), "")
+})
+
+test("persists as index.json + one session file per session", async () => {
+    const config = baseConfig()
+    const store = await loadStore(config)
+    commitN(store, 4, { sessionId: "sess-a" })
+    commitN(store, 2, { sessionId: "sess-b" })
+    await flush()
+
+    const projectDir = join(config.dataDir, "tproj")
+    const indexFile = join(projectDir, "index.json")
+    const sessionsDir = join(projectDir, "sessions")
+    assert.ok(existsSync(indexFile), "index.json missing")
+    assert.ok(existsSync(sessionsDir), "sessions dir missing")
+
+    const index = readJson(indexFile)
+    assert.equal(index.version, 2)
+    assert.equal(index.projectId, "tproj")
+    assert.ok(index.policies["p-default"], "index must keep policies")
+    assert.equal("nodes" in index, false, "index must not embed node data")
+    assert.equal("order" in index, false, "index must not embed order")
+    assert.equal("nextTurnIndex" in index, false, "turn sequence must be derived from nodes")
+
+    const partFiles = readdirSync(sessionsDir).filter((f) => f.endsWith(".json"))
+    assert.equal(partFiles.length, 2, "one file per distinct session")
+    const bySession = new Map()
+    for (const f of partFiles) {
+        const part = readJson(join(sessionsDir, f))
+        assert.equal(part.version, 2)
+        for (const node of part.nodes) {
+            bySession.set(node.sessionId, (bySession.get(node.sessionId) ?? 0) + 1)
+        }
+    }
+    assert.equal(bySession.get("sess-a"), 4)
+    assert.equal(bySession.get("sess-b"), 2)
+    assert.equal(store.count(), 6)
+})
+
+test("migrates a legacy v1 memory.json into the v2 layout", async () => {
+    const config = baseConfig()
+    const projectDir = join(config.dataDir, "tproj")
+    mkdirSync(projectDir, { recursive: true })
+    const node = {
+        nodeId: "n-legacy1",
+        projectId: "tproj",
+        sessionId: "old-session",
+        agentName: "build",
+        summary: "legacy memory",
+        outcome: "success",
+        files: ["src/legacy.ts"],
+        turnIndex: 0,
+        createdAt: new Date().toISOString(),
+    }
+    writeFileSync(
+        join(projectDir, "memory.json"),
+        JSON.stringify({
+            version: 1,
+            projectId: "tproj",
+            rootPath: "C:/proj",
+            createdAt: new Date().toISOString(),
+            nextTurnIndex: 1,
+            nodes: { "n-legacy1": node },
+            order: ["n-legacy1"],
+            policies: { "p-default": { code: "params", params: { fileOverlapWeight: 0.5, ftsScoreWeight: 0.3, successBoost: 0.1, failureBoost: 0.25, recencyHalfLife: 50, maxRecall: 5, minScore: 0.05 }, isActive: true, dreamRound: 0, createdAt: new Date().toISOString() } },
+            activePolicyId: "p-default",
+            dreamRuns: {},
+        }),
+        "utf8",
+    )
+
+    const store = await loadStore(config)
+    assert.equal(store.count(), 1)
+    assert.equal(store.sortedNodes()[0].summary, "legacy memory")
+    // next load reads the v2 layout, not memory.json
+    const reloaded = await loadStore(config)
+    assert.equal(reloaded.count(), 1)
+    assert.equal(reloaded.search("legacy", []).length, 1)
+})
+
+test("reload round-trips turn order across sessions", async () => {
+    const config = baseConfig()
+    const store = await loadStore(config)
+    const ids = commitN(store, 3, { sessionId: "sess-x" }).map((n) => n.nodeId)
+    store.commit({ summary: "later", files: ["y.ts"], sessionId: "sess-y", agentName: "build" })
+    await flush()
+
+    const reloaded = await loadStore(config)
+    assert.equal(reloaded.count(), 4)
+    assert.deepEqual(reloaded.sortedNodes().map((n) => n.nodeId), [...ids, reloaded.latestNode().nodeId])
+    assert.ok(reloaded.latestNode().sessionId === "sess-y")
 })
