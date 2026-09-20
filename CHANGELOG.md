@@ -2,13 +2,28 @@
 
 ## Unreleased
 
-**修复**
-- `dream_memory_search` 不传 `limit` 时现在默认取当前策略 `maxRecall`（此前被钳到 1，只返回单条）。
-- 回合菜单现在会真实检索并在命中跨会话节点时附带 teaser 提示（此前 teaser 触发链未接线，系统提示承诺的"命中历史"始终不出现）。
-- `dream_memory_dream` 的 `focus` 参数现在真正引导做梦的最薄弱指标选择（此前为空操作）。
+## v0.4.0 — 2026-09
 
-**重构**
-- 工具名统一为 `dream_memory_` 前缀（原前缀混杂、不易阅读，且 `memory_` 无法与其他插件区分）：`commit_task_trace → dream_memory_commit`、`search_history_experience → dream_memory_search`、`inspect_node_detail → dream_memory_node`、`dream_status → dream_memory_status`、`switch_policy → dream_memory_policy`、`run_dream_optimization → dream_memory_dream`。菜单/系统提示/文档同步更新。
+**重构：纯计算提取，去除 distill LLM 依赖**
+
+- `dream_memory_commit` 不再异步调用小模型补全字段。节点数据在 commit 时从对话素材同步提取（规则：summary=前 60 字，outcome=按工具错误判断，why=截取 errorMessage）。无 LLM 调用，无隐藏 session 泄漏。
+- `MetaLlm` 类仅保留 `mutate()` 方法（dreaming 参数突变），删除 `distill()`、`ensureSession()`、持久 session 缓存。每次 mutate 创建临时 session，用完即关闭。
+- 删除 `DistillResult` 类型、`buildDistillPrompt`/`parseDistillJson` 函数、`NodeRecord.distillPending` 字段。
+- idle auto-commit 同步使用 `extractNodeFields` 提取结构化字段，不再硬编码 `outcome: "partial"`。
+
+**修复：index.json 丢失时从 session 文件重建**
+
+- `MemoryStore.load()` 新增 `rebuildFromSessions()` 静态方法：当 index.json 和 V1 均失败时，扫描 `sessions/*.json` 收集所有节点，重建索引（默认策略 + 空 dreamRuns）。日志记录恢复的节点数。
+- 重建后自动持久化写入正确的 index.json，防止二次丢失。
+
+**修复：默认同 session 父链**
+
+- `commit()` 默认父节点改为同 session 最新节点（此前连接全局最新节点，导致不同 session 的发现树被隐式串链）。
+- 新增 `latestNodeForSession(sessionId)` 方法。显式传 `parentId` 的跨 session 行为不受影响。
+
+**其他**
+
+- `debug` 默认值从 `true` 改为 `false`，减少控制台噪音。
 
 ## v0.3.1 — 2026-09
 

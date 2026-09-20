@@ -1,5 +1,5 @@
-import type { CaptureMaterial } from "./types.js"
-import { tail } from "./utils.js"
+import type { CaptureMaterial, Outcome } from "./types.js"
+import { tail, truncate } from "./utils.js"
 
 interface PartLike {
     type?: string
@@ -22,7 +22,7 @@ interface MessageResponseLike {
 
 /**
  * Fetch the tail of a session and isolate the most recent user turn: the last
- * user message plus all assistant parts after it (text for distillation, tools).
+ * user message plus all assistant parts after it (text for extraction, tools).
  */
 export async function captureTurn(client: unknown, sessionID: string, maxChars: number): Promise<CaptureMaterial> {
     let raw: MessageLike[] = []
@@ -69,6 +69,29 @@ export async function captureTurn(client: unknown, sessionID: string, maxChars: 
         assistantText: tail(assistantParts.join("\n"), maxChars - budget),
         tools,
     }
+}
+
+/**
+ * Pure-computation extraction of structured node fields from captured material.
+ * No LLM call — rules-based, instant, deterministic.
+ */
+export function extractNodeFields(material: CaptureMaterial): {
+    summary: string
+    outcome: Outcome
+    why: string | undefined
+    errorMessage: string | undefined
+} {
+    const raw = (material.assistantText || material.userText || "").replace(/\s+/g, " ").trim()
+    const summary = truncate(raw, 60) || "（无内容）"
+
+    const hasError = material.tools.some((t) => t.error)
+    const allToolsOk = material.tools.length > 0 && !hasError
+    const outcome: Outcome = hasError ? "failed" : allToolsOk ? "success" : "partial"
+
+    const errorMessage = material.tools.find((t) => t.error)?.error
+    const why = hasError ? truncate(errorMessage ?? "未知错误", 80) : undefined
+
+    return { summary, outcome, why, errorMessage }
 }
 
 /** Collects file paths touched by edit/write tools per session, for commit enrichment. */

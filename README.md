@@ -23,8 +23,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
    （文件命中率 / 失败规避率 / 精确率 / 召回预算）的加权总分，只有稳健提升
    （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。
-4. **进化**：后台「馆藏官」小模型（可选）为不完整提交补全摘要与失败根因，
-   并可作为策略变异的启发式来源。
+4. **进化**：后台「馆藏官」小模型（可选）作为策略变异的启发式来源。
 
 ## 安装
 
@@ -66,7 +65,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 | 工具 | 作用 |
 | --- | --- |
-| `dream_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时后台跑小模型补全 |
+| `dream_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
 | `dream_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
 | `dream_memory_node` | 查看节点详情 |
 | `dream_memory_status` | 记忆库状态 + replay 指标 |
@@ -89,7 +88,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ```jsonc
 {
-    "debug": true,
+    "debug": false,
     "autoCommitOnIdle": true,     // 会话空闲时自动把本回合素材归档为记忆节点
     "autoCommitIdleGapMs": 300000, // 相邻两次自动归档的最短间隔（毫秒）
     "menu": {
@@ -111,7 +110,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
         "precision": 0.25,
         "recallBudget": 0.15
     },
-    // 后台「馆藏官」小模型（可选，默认关闭；开启后 commit 会自动补全摘要/根因）
+    // 后台「馆藏官」小模型（可选，默认关闭；用于 dreaming 参数突变）
     "distill": {
         "enabled": true,
         "providerID": "anthropic",

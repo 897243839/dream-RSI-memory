@@ -1,6 +1,6 @@
 import type { Logger } from "./logger.js"
-import type { MemoryConfig, DistillResult, RecallParams } from "./types.js"
-import { buildDistillPrompt, buildMutationPrompt, parseDistillJson } from "./prompts.js"
+import type { MemoryConfig, RecallParams } from "./types.js"
+import { buildMutationPrompt } from "./prompts.js"
 import { clampParams } from "./utils.js"
 
 interface PartLike {
@@ -26,10 +26,8 @@ function textOf(message: MessageLike): string {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** Background "馆藏官" small-model helper: distill + occasional strategy mutation. */
+/** Background helper for dreaming: parameter mutation via a hidden LLM session (created per-call, auto-cleaned). */
 export class MetaLlm {
-    private sessionId: string | null = null
-
     constructor(
         private readonly client: unknown,
         private readonly config: MemoryConfig,
@@ -48,8 +46,7 @@ export class MetaLlm {
         return { providerID: d.providerID, modelID: d.modelID }
     }
 
-    private async ensureSession(): Promise<string | null> {
-        if (this.sessionId) return this.sessionId
+    private async createTempSession(): Promise<string | null> {
         try {
             const clientAny = this.client as {
                 session: {
@@ -57,21 +54,29 @@ export class MetaLlm {
                 }
             }
             const created = await clientAny.session.create({
-                body: { title: "dream-memory-distill" },
+                body: { title: "dream-memory-mutate" },
                 query: { directory: this.directory },
             })
-            const id = created?.data?.id
-            if (!id) return null
-            this.sessionId = id
-            return id
+            return created?.data?.id ?? null
         } catch (error) {
-            this.logger.error("distill session create failed", { error: String(error) })
+            this.logger.error("mutate session create failed", { error: String(error) })
             return null
         }
     }
 
+    private async deleteTempSession(sessionId: string): Promise<void> {
+        try {
+            const clientAny = this.client as {
+                session: { delete(options: { path: { id: string } }): Promise<unknown> }
+            }
+            await clientAny.session.delete({ path: { id: sessionId } })
+        } catch {
+            /* ignore — session may have expired */
+        }
+    }
+
     private async runHidden(promptText: string): Promise<string | null> {
-        const sessionId = await this.ensureSession()
+        const sessionId = await this.createTempSession()
         if (!sessionId) return null
 
         const sentAt = Date.now()
@@ -109,24 +114,14 @@ export class MetaLlm {
                 }
                 if (lastText) return lastText
             }
-            this.logger.warn("distill timed out")
+            this.logger.warn("mutate timed out")
             return null
         } catch (error) {
-            this.logger.error("distill prompt failed", { error: String(error) })
+            this.logger.error("mutate prompt failed", { error: String(error) })
             return null
+        } finally {
+            void this.deleteTempSession(sessionId)
         }
-    }
-
-    async distill(material: Parameters<typeof buildDistillPrompt>[0], args: Parameters<typeof buildDistillPrompt>[1]): Promise<DistillResult | null> {
-        if (!this.configured) return null
-        const prompt = buildDistillPrompt(material, args)
-        const raw = await this.runHidden(prompt)
-        const result = parseDistillJson(raw ?? "")
-        if (result && (result.summary || result.why || result.outcome)) {
-            this.logger.debug("distill ok", { summary: result.summary?.slice(0, 60) })
-            return result
-        }
-        return null
     }
 
     async mutate(params: RecallParams, notes: string): Promise<RecallParams[]> {

@@ -1,5 +1,5 @@
 import type { Part, UserMessage } from "@opencode-ai/sdk"
-import { captureTurn, type FileCollector } from "./capture.js"
+import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
 import type { Logger } from "./logger.js"
 import type { GateRegistry } from "./menu.js"
@@ -201,18 +201,17 @@ export function createEventHandler(
             if (last !== null && Date.now() - last < config.autoCommitIdleGapMs) return
             try {
                 const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
-                const summary = (material.assistantText || material.userText || "")
-                    .replace(/\s+/g, " ")
-                    .trim()
-                    .slice(0, 96)
-                if (!summary) return
+                const extracted = extractNodeFields(material)
+                if (!extracted.summary || extracted.summary === "（无内容）") return
                 const node = store.commit({
-                    summary: "auto(idle) " + summary,
+                    summary: "auto(idle) " + extracted.summary,
+                    outcome: extracted.outcome,
+                    why: extracted.why,
+                    errorMessage: extracted.errorMessage,
                     files: collector
                         .take(sessionID)
                         .map((f) => normalizeProjectPath(store.getRootPath(), f))
                         .filter((f): f is string => !!f),
-                    outcome: "partial",
                     sessionId: sessionID,
                     agentName: "idle",
                     autoCreated: true,

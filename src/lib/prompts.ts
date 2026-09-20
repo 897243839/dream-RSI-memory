@@ -1,10 +1,8 @@
-import type { CaptureMaterial, CommitInput, DistillResult, RecallParams } from "./types.js"
-
-export const OUTCOME_VALUES = ['"success"', '"failed"', '"partial"'].join("|")
+import type { RecallParams } from "./types.js"
 
 /**
  * 结构化系统帮助块（按 ACP 触发模式整块注入，替换旧的 2 行弱文案）。
- * WHY：旧文案说“非每回合必须、跟不跟着做均可”且无示例、无触发哲学——
+ * WHY：旧文案说"非每回合必须、跟不跟着做均可"且无示例、无触发哲学——
  * 模型没有任何动机调用。整块化为 WHEN / WHEN-NOT / 真实示例 / 哲学，
  * 让模型在回合边界有明确、可执行的触发条件。
  */
@@ -63,35 +61,6 @@ export function renderMenuText(input: MenuRenderInput): string {
         .join("\n")
 }
 
-/** 蒸馏提示：把一回合素材压缩成一条可复用 JSON 记忆。 */
-export function buildDistillPrompt(
-    material: CaptureMaterial,
-    args: Partial<CommitInput>,
-    intent = "",
-): string {
-    const userText = material.userText ? `用户意图：\n${material.userText}\n` : ""
-    const assistantText = material.assistantText ? `助手行为摘要：\n${material.assistantText}\n` : ""
-    const toolText =
-        material.tools.length > 0
-            ? `本次使用的工具：\n${material.tools.map((t) => `- ${t.tool}${t.error ? ` (ERROR: ${t.error})` : ""}`).join("\n")}\n`
-            : ""
-    const intentText = intent.trim() ? `任务类型提示：${intent.trim()}\n` : ""
-    return [
-        "你是一个严格的记忆馆藏官。下面是一次真实 coding 会话回合的素材，请抽取成一条可复用的长期记忆。",
-        "",
-        userText + assistantText + toolText + intentText,
-        "规则：",
-        "1. summary：一句话概括该回合解决/探索的问题与结论（≤60 字，中英皆可）。",
-        "2. outcome：success=目标达成；failed=明确踩坑/失败且根因清楚；partial=有进展但未完成（默认）。",
-        "3. why：仅当 outcome=failed 时必填，写明失败根因（≤80 字），供未来避免重蹈。",
-        "4. files：该回合实际触碰的文件，必须是项目相对路径；拿不准就留空数组。",
-        "5. errorMessage：若失败来自具体报错，原文摘录关键一句；否则 null。",
-        "",
-        "只输出一个 JSON，不要任何解释/代码块包裹：",
-        `{"summary": string, "outcome": ${OUTCOME_VALUES}, "why": string|null, "files": string[], "errorMessage": string|null}`,
-    ].join("\n")
-}
-
 /** 突变提示：让检索策略自我进化。 */
 export function buildMutationPrompt(params: RecallParams, notes: string): string {
     const values = [
@@ -116,28 +85,4 @@ export function buildMutationPrompt(params: RecallParams, notes: string): string
     ].join("\n")
 }
 
-/** 解析蒸馏 LLM 返回的 JSON，失败返回 null。 */
-export function parseDistillJson(raw: string): DistillResult | null {
-    const cleaned = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim()
-    const start = cleaned.indexOf("{")
-    const end = cleaned.lastIndexOf("}")
-    if (start < 0 || end <= start) return null
-    try {
-        const obj = JSON.parse(cleaned.slice(start, end + 1)) as Partial<DistillResult>
-        if (typeof obj.summary !== "string" || !obj.summary.trim()) return null
-        const summary = obj.summary.trim().slice(0, 60)
-        const outcome = obj.outcome === "success" || obj.outcome === "failed" ? obj.outcome : "partial"
-        const why = typeof obj.why === "string" && obj.why.trim() ? obj.why.trim().slice(0, 80) : undefined
-        const files = Array.isArray(obj.files) ? obj.files.filter((f): f is string => typeof f === "string").slice(0, 12) : []
-        const errorMessage = typeof obj.errorMessage === "string" && obj.errorMessage.trim() ? obj.errorMessage.trim().slice(0, 160) : undefined
-        return {
-            summary,
-            outcome,
-            why,
-            files,
-            errorMessage,
-        }
-    } catch {
-        return null
-    }
-}
+

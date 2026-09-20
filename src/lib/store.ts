@@ -10,6 +10,7 @@ import {
     type HitResult,
     type MemoryConfig,
     type NodeRecord,
+    type Outcome,
     type PolicyRecord,
     type RecallParams,
 } from "./types.js"
@@ -122,6 +123,59 @@ export class MemoryStore {
         else this.sessionNodes.set(key, [node])
     }
 
+    /**
+     * Rebuild StoreData from session files when index.json is lost/corrupted.
+     * Scans sessions/*.json, collects all nodes, rebuilds with default policies.
+     */
+    private static async rebuildFromSessions(
+        sessionsDir: string,
+        projectId: string,
+        rootPath: string,
+        logger: Logger,
+    ): Promise<StoreData | null> {
+        try {
+            const files = await fs.readdir(sessionsDir).catch(() => [] as string[])
+            const allNodes: NodeRecord[] = []
+            for (const file of files) {
+                if (!file.endsWith(".json")) continue
+                try {
+                    const part = JSON.parse(await fs.readFile(join(sessionsDir, file), "utf8")) as SessionPart
+                    if (part?.version === DISK_VERSION && Array.isArray(part.nodes)) {
+                        allNodes.push(...part.nodes.filter((n) => n?.nodeId))
+                    }
+                } catch {
+                    // Skip corrupt session file
+                }
+            }
+            if (allNodes.length === 0) return null
+
+            const defaultPolicy = makePolicy("p-default", DEFAULT_PARAMS, 0)
+            const data: StoreData = {
+                version: 1,
+                projectId,
+                rootPath,
+                createdAt: nowIso(),
+                nextTurnIndex: 0,
+                nodes: {},
+                order: [],
+                policies: { [defaultPolicy.policyId]: { ...defaultPolicy, isActive: true } },
+                activePolicyId: defaultPolicy.policyId,
+                dreamRuns: {},
+            }
+            for (const node of allNodes) {
+                data.nodes[node.nodeId] = node
+            }
+            data.nextTurnIndex = Object.values(data.nodes).reduce((max, n) => Math.max(max, n.turnIndex + 1), 0)
+            data.order = Object.keys(data.nodes).sort((a, b) => data.nodes[a].turnIndex - data.nodes[b].turnIndex)
+
+            logger.warn("rebuilt index from session files", { nodesRecovered: allNodes.length })
+            return data
+        } catch (error) {
+            logger.error("rebuildFromSessions failed", { error: String(error) })
+            return null
+        }
+    }
+
     static async load(projectId: string, rootPath: string, dataDir: string, logger: Logger): Promise<MemoryStore> {
         const dir = join(dataDir, projectId)
         const indexFile = join(dir, "index.json")
@@ -177,6 +231,12 @@ export class MemoryStore {
             } catch {
                 data = null
             }
+        }
+
+        // Rebuild from session files if index.json is lost/corrupted.
+        if (data === null) {
+            data = await MemoryStore.rebuildFromSessions(sessionsDir, projectId, rootPath, logger)
+            if (data) migrated = true // trigger persist to write a correct index.json
         }
 
         if (data === null) {
@@ -240,6 +300,15 @@ export class MemoryStore {
         return id ? this.data.nodes[id] : undefined
     }
 
+    /** Latest node belonging to a specific session (for same-session parent chain). */
+    latestNodeForSession(sessionId: string): NodeRecord | undefined {
+        for (let i = this.data.order.length - 1; i >= 0; i--) {
+            const node = this.data.nodes[this.data.order[i]]
+            if (node.sessionId === sessionId) return node
+        }
+        return undefined
+    }
+
     activePolicy(): PolicyRecord {
         return this.data.policies[this.data.activePolicyId] ?? { ...makePolicy("p-orphan", DEFAULT_PARAMS, 0), isActive: true }
     }
@@ -267,7 +336,7 @@ export class MemoryStore {
 
     commit(input: CommitInput): NodeRecord {
         const nodeId = "n-" + randomUUID().slice(0, 8)
-        const parentId = input.parentId ?? this.latestNode()?.nodeId
+        const parentId = input.parentId ?? this.latestNodeForSession(input.sessionId)?.nodeId
         const parent = parentId ? this.data.nodes[parentId] : undefined
         const branchId = input.branchId ?? (parent ? (parent.branchId ?? parentId) : nodeId)
         const turnIndex = this.data.nextTurnIndex++
@@ -287,7 +356,6 @@ export class MemoryStore {
             files: dedupe(input.files ?? []),
             turnIndex,
             createdAt: nowIso(),
-            distillPending: false,
         }
         if (input.score !== undefined) node.score = input.score
         if (input.autoCreated) node.autoCreated = true

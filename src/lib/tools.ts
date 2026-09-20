@@ -1,5 +1,5 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
-import { captureTurn, type FileCollector } from "./capture.js"
+import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
 import type { Logger } from "./logger.js"
 import type { MetaLlm } from "./meta-llm.js"
@@ -44,9 +44,9 @@ export function createTools(deps: {
     // ------------------------------------------------------------------ commit
     const commitTool = tool({
         description:
-            "[dream-memory] 把当前回合（或指定的探索/踩坑/结论）记入长期记忆决策树节点。可在回合中获得新结论后调用；不传 summary/outcome 时会自动抓最近对话素材，在后台由小模型补全标注。",
+            "[dream-memory] 把当前回合（或指定的探索/踩坑/结论）记入长期记忆决策树节点。可在回合中获得新结论后调用；不传 summary/outcome 时会自动从对话素材中提取结构化字段。",
         args: {
-            summary: s.string().optional().describe("一句话结论（≤60 字）。留空则由后台补全"),
+            summary: s.string().optional().describe("一句话结论（≤60 字）。留空则从对话自动提取"),
             files: s.array(s.string()).optional().describe("本回合实际触碰的文件路径（项目相对或绝对）"),
             outcome: s
                 .union([s.literal("success"), s.literal("failed"), s.literal("partial")])
@@ -57,25 +57,26 @@ export function createTools(deps: {
             score: s.number().optional().describe("自评质量分 0~1，可省略"),
             parentId: s.string().optional().describe("父节点 id，省略则接到最近节点"),
             branchId: s.string().optional().describe("显式分支 id，用于分叉新探索路线"),
-            distill: s.boolean().optional().describe("是否允许后台小模型补全标注（默认 true）"),
         },
         async execute(args, ctx) {
             const { sessionID, agent, worktree } = ctx
             const touched = collector.take(sessionID)
             const providedFiles = normalizeFiles(worktree, [...(args.files ?? []), ...touched])
-            const outcome: Outcome = args.outcome ?? "partial"
 
-            let why = args.why?.trim()
+            const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
+            const extracted = extractNodeFields(material)
+
+            const summary = args.summary?.trim() || extracted.summary
+            const outcome: Outcome = args.outcome || extracted.outcome
+            let why = args.why?.trim() || extracted.why
             if (outcome === "failed" && !why) why = "（失败：模型未记录根因，建议回看该节点 errorMessage）"
-            let summary = args.summary?.trim()
-            if (!summary) summary = `auto: ${truncate(await captureMaterialText(), 96)}`
 
             const input: CommitInput = {
                 summary,
                 files: providedFiles,
                 outcome,
                 why,
-                errorMessage: args.errorMessage?.trim() || undefined,
+                errorMessage: args.errorMessage?.trim() || extracted.errorMessage,
                 score: args.score,
                 parentId: args.parentId,
                 branchId: args.branchId,
@@ -84,50 +85,11 @@ export function createTools(deps: {
             }
             const node = store.commit(input)
 
-            const wantDistill = args.distill !== false
-            const needsDistill = meta.configured && wantDistill && (!args.summary?.trim() || (outcome === "failed" && !args.why?.trim()))
-            if (needsDistill) {
-                store.patchNode(node.nodeId, { distillPending: true })
-                const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
-                void (async () => {
-                    try {
-                        const draft = await meta.distill(material, args)
-                        if (draft) {
-                            const patch: Record<string, unknown> = { distillPending: false }
-                            if (!args.summary?.trim() && draft.summary) patch.summary = draft.summary
-                            if (!args.why?.trim() && draft.why) patch.why = draft.why
-                            if (outcome === "partial" && draft.outcome && draft.outcome !== "partial") patch.outcome = draft.outcome
-                            if (!args.errorMessage?.trim() && draft.errorMessage) patch.errorMessage = draft.errorMessage
-                            if (draft.files && draft.files.length) {
-                                const draftFiles = normalizeFiles(worktree, draft.files)
-                                patch.files = dedupe([...(node.files ?? []), ...draftFiles])
-                            }
-                            store.patchNode(node.nodeId, patch)
-                        } else {
-                            store.patchNode(node.nodeId, { distillPending: false })
-                        }
-                    } catch (error) {
-                        store.patchNode(node.nodeId, { distillPending: false })
-                        logger.warn("background distill failed", { error: String(error), nodeId: node.nodeId })
-                    }
-                })()
-            }
-
             return (
                 `[dream-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${outcomeLabel(node.outcome)}）` +
                 (providedFiles.length ? `，关联 ${providedFiles.length} 个文件` : "") +
-                (needsDistill ? "，后台小模型正在补全标注" : "") +
                 `\nsummary：${node.summary}`
             )
-
-            async function captureMaterialText(): Promise<string> {
-                try {
-                    const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
-                    return material.assistantText || material.userText || "（无内容）"
-                } catch {
-                    return "（无内容）"
-                }
-            }
         },
     })
 

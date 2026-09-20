@@ -18,7 +18,7 @@ function defaultDataDir(): string {
 const DEFAULTS: MemoryConfig = {
     enabled: true,
     dataDir: defaultDataDir(),
-    debug: true,
+    debug: false,
     distill: {
         enabled: true,
         maxMaterialChars: 6000,

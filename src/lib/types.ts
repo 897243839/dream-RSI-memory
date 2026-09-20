@@ -46,7 +46,6 @@ export interface NodeRecord {
     files: string[]
     turnIndex: number
     createdAt: string
-    distillPending?: boolean
     autoCreated?: boolean
 }
 
@@ -117,14 +116,6 @@ export interface CaptureMaterial {
     userText: string
     assistantText: string
     tools: { tool: string; error?: string }[]
-}
-
-export interface DistillResult {
-    summary?: string
-    why?: string
-    outcome?: Outcome
-    errorMessage?: string
-    files?: string[]
 }
 
 export interface MemoryConfig {
