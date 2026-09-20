@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 — 2026-09
+
+- 许可证由 Apache-2.0 改为 **AGPL-3.0-or-later**（LICENSE / package.json / README）。
+
 ## v0.2.0 — 2026-09
 
 工程化与可靠性改进。

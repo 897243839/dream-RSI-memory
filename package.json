@@ -1,6 +1,6 @@
 {
     "name": "dream-rsi-memory",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "type": "module",
     "description": "dream-RSI-memory — a self-evolving long-term memory plugin for opencode: an independent implementation of the Dream-RSI technique (arXiv:2609.14858). No affiliation with Google.",
     "main": "./dist/index.js",
@@ -32,7 +32,7 @@
         "dream-rsi",
         "recall"
     ],
-    "license": "Apache-2.0",
+    "license": "AGPL-3.0-or-later",
     "peerDependencies": {
         "@opencode-ai/plugin": ">=1.4.3"
     },

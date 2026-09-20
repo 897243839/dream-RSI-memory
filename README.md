@@ -130,4 +130,4 @@ npm test             # 构建 + 测试套件（test/*.test.mjs）
 
 ## License
 
-Apache-2.0。见 [LICENSE](LICENSE)。
+AGPL-3.0 或更高版本。见 [LICENSE](LICENSE)。
