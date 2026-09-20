@@ -10,8 +10,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 「做梦」时在严格时间线 holdout 上离线回放不同候选策略，只接受在 train 与 valid
 都稳健提升者 —— 因此策略**只会更好、不会退化**，且无需重新训练任何模型。
 
-- 论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
-- 官方项目页: https://dream-rsi.com
+- 参考论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
 - Design doc（详细方案）: [`docs/Dream-RSI-记忆库设计方案.md`](docs/Dream-RSI-记忆库设计方案.md)
 
 ## 机制
