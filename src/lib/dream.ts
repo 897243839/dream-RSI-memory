@@ -24,6 +24,32 @@ function weakestNote(metrics: ReplayMetrics, weights: MemoryConfig["replayWeight
     return notes[weakKey] ?? ""
 }
 
+type MetricKey = keyof ReplayMetrics & ("fileHitRate" | "failureAvoidRate" | "precision" | "recallBudget")
+
+/**
+ * Note that drives the candidates. Without `focus` it's the weakest metric;
+ * with `focus` the requested aspect wins (matching the run_dream_optimization
+ * `focus` arg: file recall / failure avoid / precision / budget).
+ */
+function noteFor(metrics: ReplayMetrics, weights: MemoryConfig["replayWeights"], focus?: string): string {
+    const f = focus?.trim().toLowerCase() ?? ""
+    const key: MetricKey | "" =
+        f.includes("file") ? "fileHitRate"
+        : f.includes("fail") ? "failureAvoidRate"
+        : f.includes("precis") ? "precision"
+        : f.includes("budget") || f.includes("recall") ? "recallBudget"
+        : ""
+    if (key === "") return weakestNote(metrics, weights)
+    const value = metrics[key]
+    const notes: Record<MetricKey, string> = {
+        fileHitRate: `fileHitRate=${value.toFixed(2)}（指定优先改善）→ 应提高 fileOverlapWeight，并降低 minScore`,
+        failureAvoidRate: `failureAvoidRate=${value.toFixed(2)}（指定优先改善）→ 应提高 failureBoost，并提高 ftsScoreWeight（errorMessage 检索权重）`,
+        precision: `precision=${value.toFixed(2)}（指定优先改善）→ 应提高 minScore 并提高 ftsScoreWeight`,
+        recallBudget: `recallBudget=${value.toFixed(2)}（指定优先改善）→ 应降低 maxRecall 并降低 ftsScoreWeight`,
+    }
+    return notes[key]
+}
+
 function heuristicVariants(base: RecallParams, notes: string, count: number): RecallParams[] {
     const variants: RecallParams[] = []
     const push = (patch: Partial<RecallParams>) => variants.push(clampParams({ ...base, ...patch }))
@@ -65,7 +91,7 @@ export interface DreamRunResult {
 export async function runDream(
     store: MemoryStore,
     config: MemoryConfig,
-    deps: { logger: Logger; meta?: MetaLlm },
+    deps: { logger: Logger; meta?: MetaLlm; focus?: string },
 ): Promise<DreamRunResult> {
     const runId = "r-" + randomUUID().slice(0, 8)
     const n = store.count()
@@ -76,7 +102,7 @@ export async function runDream(
     const replayOpts = { trainRatio: config.dream.trainRatio, weights: config.replayWeights }
     const active = store.activePolicy()
     const baseline = runReplay(store, active.params, replayOpts)
-    const note = weakestNote(baseline.train, config.replayWeights)
+    const note = noteFor(baseline.train, config.replayWeights, deps.focus)
 
     const candidates: RecallParams[] = [active.params]
     candidates.push(...heuristicVariants(active.params, note, config.dream.candidateCount))

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**修复**
+- `search_history_experience` 不传 `limit` 时现在默认取当前策略 `maxRecall`（此前被钳到 1，只返回单条）。
+- 回合菜单现在会真实检索并在命中跨会话节点时附带 teaser 提示（此前 teaser 触发链未接线，系统提示承诺的"命中历史"始终不出现）。
+- `run_dream_optimization` 的 `focus` 参数现在真正引导做梦的最薄弱指标选择（此前为空操作）。
+
 ## v0.3.1 — 2026-09
 
 插件入口改为新版 V1 对象格式（`export default { id, server }`）。

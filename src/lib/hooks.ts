@@ -8,7 +8,7 @@ import { renderMenuText } from "./prompts.js"
 import { dreamHelpText, nodeDetailText, policyListText, replayOptsOf, statusText } from "./report.js"
 import type { MemoryStore } from "./store.js"
 import type { MemoryConfig } from "./types.js"
-import { normalizeProjectPath } from "./utils.js"
+import { normalizeProjectPath, truncate } from "./utils.js"
 
 const INTERNAL_AGENT_NAMES = new Set(["title", "summary", "compaction"])
 
@@ -61,10 +61,28 @@ export function createSystemPromptHandler(config: MemoryConfig): ((input: unknow
     }
 }
 
+/**
+ * Lightweight teaser: search the last user message against the whole store and,
+ * if the top hit comes from a *different* session, emit a one-line hint so the
+ * model sees the promised "命中历史" trigger and follows up with search_history_experience.
+ * Same-session nodes are skipped: reminding the model of its own recent work is noise.
+ */
+function teaserFor(store: MemoryStore, queryText: string, files: string[], sessionID: string): string {
+    const query = queryText.trim()
+    if (!query || store.count() === 0) return ""
+    const hit = store
+        .search(query, files, { limit: 5 })
+        .find((h) => h.node.sessionId !== sessionID)
+    if (!hit) return ""
+    const tag = hit.node.outcome === "failed" ? "（踩坑）" : hit.node.outcome === "success" ? "（成功）" : ""
+    return `${hit.node.nodeId} “${truncate(hit.node.summary || "（无摘要）", 48)}”${tag}`
+}
+
 export function createMessagesTransformHandler(
     store: MemoryStore,
     gate: GateRegistry,
     config: MemoryConfig,
+    collector: FileCollector,
 ): ((input: {}, output: { messages: TransformMessage[] }) => Promise<void>) | undefined {
     if (!config.enabled || !config.menu.enabled) return undefined
     return async (_input, output) => {
@@ -81,14 +99,22 @@ export function createMessagesTransformHandler(
         const stats = store.menuStats(replayOptsOf(config))
         if (!gate.shouldInject(sessionID, stats.nodeCount, config.menu)) return
 
+        const lastMessage = messages[idx]
+        const queryText = (lastMessage.parts ?? [])
+            .map((p) => p as { type?: string; text?: string })
+            .filter((p) => p.type === "text" && !!p.text)
+            .map((p) => p.text as string)
+            .join("\n")
+        const teaser = teaserFor(store, queryText, collector.peek(sessionID), sessionID)
         const title = renderMenuText({
             nodeCount: stats.nodeCount,
             policyId: stats.policyId,
             replayTrain: stats.replayTrain,
             minNodes: config.dream.minNodes,
             maxTokensHint: config.menu.maxTokensHint,
+            teaser,
         })
-        const userInfo = messages[idx].info as UserMessage
+        const userInfo = lastMessage.info as UserMessage
         const part: Part = {
             id: "dream-menu-" + Date.now().toString(36),
             sessionID,

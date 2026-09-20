@@ -144,9 +144,10 @@ export function createTools(deps: {
             const { sessionID, worktree } = ctx
             const touched = collector.take(sessionID)
             const files = normalizeFiles(worktree, [...(args.files ?? []), ...touched])
-            const limit = Math.min(Math.max(Math.round(args.limit ?? 0), 1), 10)
-            const hits = store.search(args.query, files, { limit })
             const policy = store.activePolicy()
+            const requested = args.limit ?? policy.params.maxRecall
+            const limit = Math.min(Math.max(Math.round(requested), 1), 10)
+            const hits = store.search(args.query, files, { limit })
 
             const lines = [`[dream-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
             for (const hit of hits) {
@@ -203,15 +204,13 @@ export function createTools(deps: {
             return `[dream-memory] 检索策略 ${prev.policyId} → ${next.policyId}\n新参数：${JSON.stringify(next.params)}`
         },
     })
-
-    // ------------------------------------------------------------ dream
+// ------------------------------------------------------------ dream
     const dreamTool = tool({
-        description: "[dream-memory] 触发一次“做梦”：在严格时间线 holdout 上评估候选检索策略，仅当 train 与 valid 上都有稳健提升才切换策略（不退化保证）。",
-        args: { focus: s.string().optional().describe("可选：指定希望优先改善的方面（如 file recall / failure avoid / precision）") },
-        async execute(args, ctx) {
-            const result = await runDream(store, config, { logger, meta })
-            if (args.focus) logger.debug("dream focus", { focus: args.focus })
-            void ctx.sessionID
+        description:
+            "[dream-memory] 触发一次“做梦”：在严格时间线 holdout 上评估候选检索策略，仅当 train 与 valid 上都有稳健提升才切换策略（不退化保证）。可用 focus 指定优先改善的方面。",
+        args: { focus: s.string().optional().describe("可选：希望优先改善的方面（file recall / failure avoid / precision / budget）；省略时自动取最薄弱指标") },
+        async execute(args, _ctx) {
+            const result = await runDream(store, config, { logger, meta, focus: args.focus })
             return result.text
         },
     })

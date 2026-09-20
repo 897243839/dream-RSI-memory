@@ -12,7 +12,7 @@ const turn = (i, agent = "build") => ({
 test("menu gate: cooldown, new-node trigger, dedup, internal-agent guard", async () => {
     const store = await loadStore()
     const cfg = baseConfig()
-    const handler = createMessagesTransformHandler(store, new GateRegistry(), cfg)
+    const handler = createMessagesTransformHandler(store, new GateRegistry(), cfg, new FileCollector())
 
     let out = turn(1)
     await handler({}, out)
@@ -97,4 +97,48 @@ test("captureTurn isolates the last turn only", async () => {
     assert.ok(!m.assistantText.includes("first reply"), "earlier-turn assistant text must not leak in")
     assert.ok(m.tools.some((t) => t.tool === "bash" && t.error))
     assert.ok(!m.tools.some((t) => t.tool === "edit" && t.error))
+})
+
+const turnWithText = (i, text, sessionID = "sess", agent = "build") => ({
+    messages: [{ info: { role: "user", agent, sessionID, id: "m" + i }, parts: [{ type: "text", text }] }],
+})
+
+test("menu teaser surfaces a real cross-session hit", async () => {
+    const store = await loadStore()
+    const cfg = baseConfig()
+    const handler = createMessagesTransformHandler(store, new GateRegistry(), cfg, new FileCollector())
+
+    const warm = turnWithText(0, "hello")
+    await handler({}, warm)
+    assert.equal(warm.messages[0].parts.length, 1, "first turn: text part only, no menu injected")
+
+    store.commit({
+        summary: "invoice totals overflow silently on discount",
+        outcome: "failed",
+        files: ["src/inv.ts"],
+        sessionId: "sess-other",
+        agentName: "build",
+    })
+
+    const out = turnWithText(1, "fix the invoice total")
+    await handler({}, out)
+    assert.equal(out.messages[0].parts.length, 2, "cooldown met + new node → menu added")
+    const menu = out.messages[0].parts[1].text
+    assert.ok(menu.includes("命中历史"), "real cross-session hit must tease")
+    assert.ok(menu.includes("invoice totals"), "teaser must carry the hit summary")
+})
+
+test("menu teaser stays quiet without a cross-session hit", async () => {
+    const store = await loadStore()
+    const cfg = baseConfig()
+    const handler = createMessagesTransformHandler(store, new GateRegistry(), cfg, new FileCollector())
+
+    const warm = turnWithText(0, "hello")
+    await handler({}, warm)
+    store.commit({ summary: "my own local fix", files: ["src/inv.ts"], sessionId: "sess", agentName: "build" })
+
+    const out = turnWithText(1, "fix the invoice total")
+    await handler({}, out)
+    assert.equal(out.messages[0].parts.length, 2, "menu still injected")
+    assert.ok(!out.messages[0].parts[1].text.includes("命中历史"), "same-session nodes must not tease")
 })

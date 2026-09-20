@@ -45,7 +45,7 @@ const server: Plugin = async (input) => {
         tool: createTools({ client: input.client, store, config, logger, collector, meta }),
         "command.execute.before": createCommandExecuteHandler(input.client, store, config, { logger, meta, collector }),
         "tool.execute.before": createToolExecuteBeforeHandler(collector),
-        "experimental.chat.messages.transform": createMessagesTransformHandler(store, gate, config),
+        "experimental.chat.messages.transform": createMessagesTransformHandler(store, gate, config, collector),
         "experimental.chat.system.transform": createSystemPromptHandler(config),
     }
     return hooks

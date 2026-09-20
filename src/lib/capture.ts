@@ -87,6 +87,11 @@ export class FileCollector {
         return !!list && list.length > 0
     }
 
+    /** Read the collected files without clearing them (used by the teaser hint). */
+    peek(sessionID: string): string[] {
+        return this.files.get(sessionID) ?? []
+    }
+
     take(sessionID: string): string[] {
         const list = this.files.get(sessionID) ?? []
         this.files.delete(sessionID)

@@ -23,7 +23,7 @@ export function renderSystemHelpText(): string {
         "3. 教程/闲聊专用/内部 agent（title/summary/compaction）的回合。",
         "",
         "示例（真实命中时，你会先收到一条 teaser 提示，长这样）：",
-        '  [dream-memory] 命中历史“桌面引擎从不发射 session.idle，记忆应在 messages.transform 回合边界自动沉淀” → 可 search_history_experience 取全文。',
+        '  [dream-memory] 命中历史：n-ab12cd34 "桌面引擎从不发射 session.idle…"（成功） → 可 search_history_experience 取全文。',
         "",
         "哲学：记忆是为你服务的工具，不是负担。有真实可复用的经验时，调用它几乎总是划算；没有命中时不打扰就是最高效。所有动作都会在合适时机由列表提示，跟不跟着做均可，但一旦看到命中 teaser，通常值得跟进。",
     ].join("\n")

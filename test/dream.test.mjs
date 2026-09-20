@@ -42,3 +42,12 @@ test("a clear-cut winner is adopted and its baseline recorded", async () => {
     }
     assert.ok(store.latestDream().finishedAt)
 })
+
+test("dream focus steers the weakest-note target", async () => {
+    const store = await loadStore()
+    const cfg = baseConfig()
+    commitN(store, 24)
+    const result = await runDream(store, cfg, { logger: fakeLogger, focus: "precision" })
+    assert.ok(result.text.includes("precision"), "note must reference the focused aspect")
+    assert.ok(result.text.includes("指定优先改善"), "focus must be marked as user-directed")
+})
