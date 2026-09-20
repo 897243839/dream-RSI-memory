@@ -104,6 +104,7 @@ export async function runDream(
     if (better && best.params !== active.params) {
         const policyId = "p-" + randomUUID().slice(0, 8)
         store.patchNodePolicy(policyId, best.params, active.policyId)
+        store.patchPolicyMeta(policyId, { replayAtCreation: { train: best.train, valid: best.valid } })
         chosen = policyId
         text =
             `[dream-memory] 做梦完成：基于 ${n} 个节点，策略 ${active.policyId} → ${policyId}。\n` +

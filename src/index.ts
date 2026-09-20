@@ -30,7 +30,7 @@ const server: Plugin = async (input) => {
     const meta = new MetaLlm(input.client, config, logger, input.directory)
 
     const hooks: Hooks = {
-        event: createEventHandler(logger),
+        event: createEventHandler(input.client, store, config, collector, logger),
         config: async (opencodeConfig) => {
             const cfg = opencodeConfig as { command?: Record<string, { template: string; description?: string }>; experimental?: { primary_tools?: string[] } }
             cfg.command ??= {}

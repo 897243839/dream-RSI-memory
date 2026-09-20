@@ -1,6 +1,6 @@
 {
     "name": "dream-rsi-memory",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "type": "module",
     "description": "dream-RSI-memory — a self-evolving long-term memory plugin for opencode: an independent implementation of the Dream-RSI technique (arXiv:2609.14858). No affiliation with Google.",
     "main": "./dist/index.js",
@@ -13,7 +13,16 @@
         "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
         "build": "npm run clean && tsc",
         "typecheck": "tsc --noEmit",
+        "test": "npm run build && node --test \"test/*.test.mjs\"",
         "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/897243839/dream-RSI-memory.git"
+    },
+    "homepage": "https://github.com/897243839/dream-RSI-memory",
+    "bugs": {
+        "url": "https://github.com/897243839/dream-RSI-memory/issues"
     },
     "keywords": [
         "opencode",

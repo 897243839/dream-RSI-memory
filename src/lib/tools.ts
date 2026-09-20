@@ -63,8 +63,7 @@ export function createTools(deps: {
             const { sessionID, agent, worktree } = ctx
             const touched = collector.take(sessionID)
             const providedFiles = normalizeFiles(worktree, [...(args.files ?? []), ...touched])
-            const validOutcome: Outcome = args.outcome ?? (args.summary ? "partial" : "partial")
-            const outcome: Outcome = args.outcome ?? validOutcome
+            const outcome: Outcome = args.outcome ?? "partial"
 
             let why = args.why?.trim()
             if (outcome === "failed" && !why) why = "（失败：模型未记录根因，建议回看该节点 errorMessage）"

@@ -47,6 +47,7 @@ export interface NodeRecord {
     turnIndex: number
     createdAt: string
     distillPending?: boolean
+    autoCreated?: boolean
 }
 
 export interface PolicyRecord {
@@ -59,6 +60,8 @@ export interface PolicyRecord {
     parentPolicyId?: string
     dreamRound: number
     createdAt: string
+    /** Replay scores measured at policy-creation time (watchdog baseline). */
+    replayAtCreation?: { train: number; valid: number | null }
 }
 
 export type DreamStatus = "queued" | "running" | "done" | "failed"
@@ -84,6 +87,7 @@ export interface CommitInput {
     branchId?: string
     sessionId: string
     agentName: string
+    autoCreated?: boolean
 }
 
 export interface HitResult {
@@ -153,6 +157,10 @@ export interface MemoryConfig {
         precision: number
         recallBudget: number
     }
+    /** Auto-record a partial node when a session edits files and goes idle without commit_task_trace. */
+    autoCommitOnIdle: boolean
+    /** Minimum gap between an idle auto-commit and the session's last recorded node. */
+    autoCommitIdleGapMs: number
 }
 
 export interface ReplayOptions {

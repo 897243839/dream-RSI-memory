@@ -50,6 +50,7 @@ export async function captureTurn(client: unknown, sessionID: string, maxChars: 
             sawUser = true
             for (const part of parts) if (part.type === "text" && part.text) userParts.push(part.text)
         } else if (message.role === "assistant") {
+            if (sawUser) continue // parts before the most recent user message belong to earlier turns
             for (const part of parts) {
                 if (part.type === "text" && part.text) assistantParts.push(part.text)
                 else if (part.type === "tool" && part.tool) {
@@ -79,6 +80,11 @@ export class FileCollector {
         const list = this.files.get(sessionID) ?? []
         list.push(file)
         this.files.set(sessionID, list)
+    }
+
+    has(sessionID: string): boolean {
+        const list = this.files.get(sessionID)
+        return !!list && list.length > 0
     }
 
     take(sessionID: string): string[] {

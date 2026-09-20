@@ -43,6 +43,8 @@ const DEFAULTS: MemoryConfig = {
         precision: 0.25,
         recallBudget: 0.15,
     },
+    autoCommitOnIdle: true,
+    autoCommitIdleGapMs: 5 * 60_000,
 }
 
 const MERGE_KEYS = ["distill", "menu", "dream", "replayWeights"] as const

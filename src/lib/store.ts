@@ -57,6 +57,10 @@ function bm25Normalized(bm25: number): number {
 
 export class MemoryStore {
     private replayCache: { at: number; train?: number; valid?: number } | null = null
+    /** Serialized write queue: snapshots are taken synchronously at call time so
+     *  concurrent mutators never lose updates, and the shared .tmp file is never
+     *  written by two flushes at once. */
+    private writeChain: Promise<void> = Promise.resolve()
 
     private constructor(
         private readonly data: StoreData,
@@ -181,6 +185,7 @@ export class MemoryStore {
             distillPending: false,
         }
         if (input.score !== undefined) node.score = input.score
+        if (input.autoCreated) node.autoCreated = true
 
         this.data.nodes[nodeId] = node
         this.data.order.push(nodeId)
@@ -196,6 +201,40 @@ export class MemoryStore {
         this.replayCache = null
         void this.persist()
         return node
+    }
+
+    /** Latest commit time (in ms) for a session, or null if the session never committed. */
+    lastNodeCommittedAtMs(sessionId: string): number | null {
+        let latest: number | null = null
+        for (const id of this.data.order) {
+            const node = this.data.nodes[id]
+            if (node.sessionId !== sessionId) continue
+            const t = Date.parse(node.createdAt)
+            if (!Number.isNaN(t) && (latest === null || t > latest)) latest = t
+        }
+        return latest
+    }
+
+    patchPolicyMeta(policyId: string, meta: { replayAtCreation?: { train: number; valid: number | null } }): void {
+        const policy = this.data.policies[policyId]
+        if (!policy) return
+        if (meta.replayAtCreation) policy.replayAtCreation = meta.replayAtCreation
+        void this.persist()
+    }
+
+    /** Watchdog: warn when the active policy currently underperforms what it promised at creation time. */
+    watchdogNotice(policyId: string, currentTrain: number, gate: number): string {
+        const policy = this.data.policies[policyId]
+        if (!policy?.replayAtCreation) return ""
+        if (currentTrain < policy.replayAtCreation.train - gate) {
+            const parent = policy.parentPolicyId
+            return (
+                `在线评估退化：${policyId} 当选时 train=${policy.replayAtCreation.train.toFixed(3)}，` +
+                `当前 ${currentTrain.toFixed(3)}（差值超 ${gate.toFixed(3)}）。` +
+                (parent ? `建议回滚：switch_policy ${parent}` : "建议回滚到默认参数。")
+            )
+        }
+        return ""
     }
 
     recordDream(run: DreamRunRecord): void {
@@ -295,21 +334,25 @@ export class MemoryStore {
         return results.slice(0, limit)
     }
 
-    search(query: string, files: string[], opts: { limit?: number; params?: RecallParams } = {}): HitResult[] {
+    search(query: string, files: string[], opts: { limit?: number; minScore?: number; params?: RecallParams } = {}): HitResult[] {
         const nodes = this.sortedNodes()
         if (nodes.length === 0) return []
         const nowTurn = this.data.nextTurnIndex - 1
         const params = opts.params ?? this.activePolicy().params
-        return this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit })
+        return this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit, minScore: opts.minScore })
     }
 
     private async persist(): Promise<void> {
-        try {
-            const tmp = this.file + ".tmp"
-            await fs.writeFile(tmp, JSON.stringify(this.data), "utf8")
-            await fs.rename(tmp, this.file)
-        } catch (error) {
-            this.logger.error("persist failed", { file: this.file, error: String(error) })
-        }
+        const snapshot = JSON.stringify(this.data)
+        this.writeChain = this.writeChain
+            .then(async () => {
+                const tmp = this.file + ".tmp"
+                await fs.writeFile(tmp, snapshot, "utf8")
+                await fs.rename(tmp, this.file)
+            })
+            .catch((error) => {
+                this.logger.error("persist failed", { file: this.file, error: String(error) })
+            })
+        return this.writeChain
     }
 }

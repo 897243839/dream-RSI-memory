@@ -81,6 +81,8 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 ```jsonc
 {
     "debug": true,
+    "autoCommitOnIdle": true,     // 会话空闲时自动把本回合素材归档为记忆节点
+    "autoCommitIdleGapMs": 300000, // 相邻两次自动归档的最短间隔（毫秒）
     "menu": {
         "enabled": true,
         "cooldownTurns": 2,      // 两次注入之间最少用户回合数
@@ -117,6 +119,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 npm install          # 仅需要 @opencode-ai/plugin、@types/node、typescript
 npm run typecheck
 npm run build        # 产物在 dist/
+npm test             # 构建 + 测试套件（test/*.test.mjs）
 ```
 
 ## 致谢

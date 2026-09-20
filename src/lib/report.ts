@@ -18,15 +18,20 @@ export function nodeStatsText(store: MemoryStore): string {
 export function statusText(store: MemoryStore, config: MemoryConfig): string {
     const active = store.activePolicy()
     const report = runReplay(store, active.params, replayOptsOf(config))
+    const autoCount = store
+        .sortedNodes()
+        .reduce((sum, n) => (n.autoCreated ? sum + 1 : sum), 0)
     const lines = [
         "[dream-memory] 项目记忆库",
-        `  ${nodeStatsText(store)}`,
+        `  ${nodeStatsText(store)}${autoCount ? `（其中 idle 自动采集 ${autoCount} 个）` : ""}`,
         `  当前策略：${active.policyId}`,
         `  params：${JSON.stringify(active.params)}`,
         `  replay：train=${report.train.totalScore.toFixed(3)}` +
             (report.valid ? ` valid=${report.valid.totalScore.toFixed(3)}` : "") +
             (report.n === 0 ? "（暂无节点）" : "（4 指标：fileHitRate+failureAvoidRate+precision+recallBudget）"),
     ]
+    const warn = store.watchdogNotice(active.policyId, report.train.totalScore, 2 * config.dream.epsilon)
+    if (warn) lines.push(`  ⚠ ${warn}`)
     const latest = store.latestDream()
     if (latest) {
         lines.push(
