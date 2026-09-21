@@ -17,6 +17,7 @@
         "build": "npm run clean && tsc",
         "typecheck": "tsc --noEmit",
         "test": "npm run build && node --test \"test/*.test.mjs\"",
+        "install:opencode": "node scripts/install.mjs",
         "prepublishOnly": "npm run build"
     },
     "repository": {

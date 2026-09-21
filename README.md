@@ -27,6 +27,25 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 安装
 
+**一键安装**（推荐）：克隆本仓库后运行
+
+```bash
+npm install        # 安装开发依赖（含 @opencode-ai/plugin）
+npm run install:opencode
+```
+
+`install:opencode` 会依次：
+1. 构建 `dist/`
+2. 在 `~/.cache/opencode/packages/dream-rsi-memory@latest/` 建立插件安装目录
+   （通过 junction/符号链接指回本仓库，改代码后重新运行即可刷新，无需重下）
+3. 把 `"dream-rsi-memory"` 追加进 opencode 配置的 `plugin` 数组
+   （`~/.config/opencode/opencode.json` 或 `opencode.jsonc`，两者都未创建时创建 json）
+4. 输出安装路径与重启提示
+
+脚本幂等，可反复运行；也可指定配置文件：`node scripts/install.mjs --config /path/to/opencode.json`。
+
+> 手动方式：
+
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
@@ -45,6 +64,8 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
     ]
 }
 ```
+
+> 插件未发布到 npm registry，`"dream-rsi-memory"` 由安装脚本在本地缓存目录解析。
 
 ## 数据
 
