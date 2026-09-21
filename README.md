@@ -92,6 +92,9 @@ npm run install:opencode                                  # 同上 dev 安装
 }
 ```
 
+> 桌面版（opencode GUI）以无项目目录启动时，插件自动回退到用户主目录注册，
+> 因此 `/dream*`、`/memory*` 命令与 `dream_memory_*` 工具始终可用。
+
 ## 数据
 
 每个项目（按工作区路径哈希）一份，默认落盘在：

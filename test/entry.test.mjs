@@ -49,3 +49,27 @@ test("plugin server wires up hooks under an isolated project", async () => {
         rmSync(data, { recursive: true, force: true })
     }
 })
+
+test("plugin server still wires up hooks when worktree is root (desktop GUI)", async () => {
+    const mod = await loadEntry()
+
+    const data = mkdtempSync(join(tmpdir(), "dm-entry-data-"))
+    try {
+        const home = mkdtempSync(join(tmpdir(), "dm-entry-home-"))
+        try {
+            const hooks = await mod.default.server({
+                client: {},
+                directory: "/",
+                worktree: "/",
+                config: { dataDir: data },
+            })
+
+            assert.equal(typeof hooks.tool, "object", "hooks.tool should be present even for root worktree")
+            assert.equal(typeof hooks["command.execute.before"], "function", "command handler should be present")
+        } finally {
+            rmSync(home, { recursive: true, force: true })
+        }
+    } finally {
+        rmSync(data, { recursive: true, force: true })
+    }
+})

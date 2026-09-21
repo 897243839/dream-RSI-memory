@@ -14,19 +14,22 @@ import { MetaLlm } from "./lib/meta-llm.js"
 import { MemoryStore } from "./lib/store.js"
 import { createTools } from "./lib/tools.js"
 import { isRootPath, projectIdOf } from "./lib/utils.js"
+import { homedir } from "node:os"
 
 const server: Plugin = async (input) => {
     const config = resolveConfig(input)
     if (!config.enabled) return {}
 
     const logger = new Logger(config.debug)
-    const rootPath = input.worktree || input.directory
+    let rootPath = input.worktree || input.directory
     if (!rootPath || isRootPath(rootPath)) {
-        // A root "/" worktree is not a usable project root (seen when opencode
-        // starts without a real cwd): skip registration instead of creating a
-        // garbage store keyed by the root hash.
-        logger.warn("skip plugin: invalid rootPath", { rootPath })
-        return {}
+        // Desktop opencode (GUI) can start without a real project cwd, passing
+        // "/" or similar as the worktree. That is not a usable project root,
+        // but skipping registration silently leaves the GUI with no tools.
+        // Fall back to the user's home directory so the plugin still works.
+        const home = homedir()
+        logger.warn("invalid rootPath; falling back to home", { rootPath, home })
+        rootPath = home
     }
     const projectId = projectIdOf(rootPath)
     const store = await MemoryStore.load(projectId, rootPath, config.dataDir, logger)
