@@ -42,28 +42,26 @@ npm run install:opencode
 `install:opencode` 会：构建 `dist/` → 在 opencode 缓存目录建安装
 （junction/符号链接指回本仓库，随改随用）→ 追加 `plugin` 配置。
 
-### 内网 / 离线机器（推荐）
+### 内网 / 离线机器（推荐，单文件即可）
 
-在任何联网机器上生成自包含离线资产（含构建产物与全部运行时依赖）：
+在任何联网机器上生成自包含离线资产：
 
 ```bash
 npm install        # 只有生成时这一台需要
-npm run vendor     # 产出 vendor/ + dream-rsi-memory-vendor.tar.gz
+npm run vendor     # 产出 dream-rsi-memory-vendor.tar.gz（含构建产物+全部运行时依赖+安装脚本）
 ```
 
-把仓库连同 `dream-rsi-memory-vendor.tar.gz` 拷贝到内网机器
-（U 盘 / 文件服务器 / git 内网镜像均可，导入方式见下），然后：
+把 **`dream-rsi-memory-vendor.tar.gz` 这一个文件**拷贝到内网目标机
+（U 盘 / 文件服务器 / 内网 git 镜像均可），然后：
 
 ```bash
-npm run install:opencode:offline     # 即 node scripts/install.mjs --offline
+tar -xzf dream-rsi-memory-vendor.tar.gz
+node scripts/install.mjs --offline
 ```
 
-`--offline` 全程离线：若发现 `vendor/` 缺失会自动解包
-`dream-rsi-memory-vendor.tar.gz`，随后从 vendor 恢复 `dist/` 并把
-运行时依赖直接复制进 opencode 缓存——不联网、不装 npm 包、不编译。
-
-> git 传输时 `vendor/` 与 tgz 均在 `.gitignore` 中，不会进仓库；
-> 请把 tgz 放到内网仓库根目录（或经文件服务器分发给目标机）。
+`--offline` 全程离线：从 `vendor/` 恢复 `dist/`、把运行时依赖直接复制进
+opencode 缓存、追加 `plugin` 配置——**不联网、不装 npm 包、不编译**。
+脚本本身也随 tgz 分发，目标机无需任何仓库源码。
 
 ### 常用命令
 

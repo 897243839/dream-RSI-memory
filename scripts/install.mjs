@@ -174,13 +174,15 @@ function makeVendor() {
     // package deps of vendored tree are self-contained (already inside each copy if nested)
     log(`vendor node_modules → ${VENDOR_NM} (${runtimeDeps.size} tops)`)
 
-    // single-file archive for intranet transfer (git-ignored, release/article friendly)
+    // single-file archive for intranet transfer (git-ignored, release/article friendly).
+    // Self-contained: vendor/ + the installer itself + package.json — a target machine
+    // needs nothing but this one file (extract, then run the bundled installer).
     const archive = join(REPO, "dream-rsi-memory-vendor.tar.gz")
     rmSync(archive, { force: true })
-    const r = spawnSync(isWin ? "tar" : "tar", ["-czf", archive, "-C", REPO, "vendor"], { cwd: REPO, stdio: "pipe" })
+    const r = spawnSync(isWin ? "tar" : "tar", ["-czf", archive, "-C", REPO, "vendor", "scripts", "package.json"], { cwd: REPO, stdio: "pipe" })
     if (r.status !== 0) fail(`tar failed: ${r.stderr?.toString()}`)
     const size = existsSync(archive) ? Math.round(statSync(archive).size / 1e6) : 0
-    log(`archive → ${archive} (${size} MB)`)
+    log(`archive → ${archive} (${size} MB, self-contained)`)
 
     writeFileSync(
         join(VENDOR, "manifest.json"),
