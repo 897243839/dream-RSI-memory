@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { createEventHandler, createMessagesTransformHandler } from "../dist/lib/hooks.js"
+import { createCommandExecuteHandler, createEventHandler, createMessagesTransformHandler } from "../dist/lib/hooks.js"
 import { captureTurn, FileCollector } from "../dist/lib/capture.js"
 import { GateRegistry } from "../dist/lib/menu.js"
 import { baseConfig, fakeLogger, loadStore } from "./helpers.mjs"
@@ -141,4 +141,56 @@ test("menu teaser stays quiet without a cross-session hit", async () => {
     await handler({}, out)
     assert.equal(out.messages[0].parts.length, 2, "menu still injected")
     assert.ok(!out.messages[0].parts[1].text.includes("命中历史"), "same-session nodes must not tease")
+})
+
+test("/dream search surfaces past nodes by keyword", async () => {
+    const store = await loadStore()
+    store.commit({
+        summary: "invoice totals overflow silently on discount",
+        outcome: "failed",
+        files: ["src/inv.ts"],
+        sessionId: "sess-other",
+        agentName: "build",
+    })
+
+    const sent = []
+    const client = { session: { prompt: async (opts) => sent.push(opts) } }
+    const handler = createCommandExecuteHandler(client, store, baseConfig(), {
+        logger: fakeLogger,
+        collector: new FileCollector(),
+    })
+
+    await handler({ command: "dream", sessionID: "sess", arguments: "search invoice total" }, {})
+    assert.equal(sent.length, 1)
+    const body = sent[0].body
+    assert.equal(body.noReply, true)
+    assert.equal(body.parts[0].ignored, true)
+    assert.ok(body.parts[0].text.includes("invoice totals overflow"), "hit summary must be surfaced")
+    assert.ok(body.parts[0].text.includes("策略 p-default"), "result header must name the policy")
+
+    await handler({ command: "memory", sessionID: "sess", arguments: "search nothing-here" }, {})
+    assert.ok(sent[1].body.parts[0].text.includes("无结果"))
+})
+
+test("/dream commit records a node with files from the collector", async () => {
+    const store = await loadStore()
+    const collector = new FileCollector()
+    collector.add("sess", "src/a.ts")
+
+    const sent = []
+    const client = { session: { prompt: async (opts) => sent.push(opts) } }
+    const handler = createCommandExecuteHandler(client, store, baseConfig(), {
+        logger: fakeLogger,
+        collector,
+    })
+
+    await handler({ command: "dream", sessionID: "sess", arguments: "commit invoice fix 成功" }, {})
+
+    assert.equal(store.count(), 1)
+    const node = store.latestNode()
+    assert.equal(node.summary, "invoice fix")
+    assert.equal(node.outcome, "success")
+    assert.deepEqual([...node.files], ["src/a.ts"])
+    assert.equal(node.agentName, "command")
+    assert.ok(sent[0].body.parts[0].text.includes("已记录节点"))
 })

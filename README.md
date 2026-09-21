@@ -78,8 +78,16 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 命令
 
-- `/dream status`、`/dream run`
-- `/memory stats`、`/memory policy`、`/memory show <nodeId>`
+| 命令 | 作用 | 等价工具 |
+| --- | --- | --- |
+| `/dream status` | 记忆库 + replay 概览 | `dream_memory_status` |
+| `/dream run` | 立即触发一次做梦优化 | `dream_memory_dream` |
+| `/dream commit <结论摘要>` | 记一条结论（可带 `成功\|失败\|部分`，自动关联本轮触碰文件） | `dream_memory_commit` |
+| `/dream search <关键词>` | 检索历史经验 | `dream_memory_search` |
+| `/memory stats` | 节点统计与当前策略（同 `/dream status`） | `dream_memory_status` |
+| `/memory policy` | 全部策略列表 | `dream_memory_policy` |
+| `/memory show <nodeId>` | 查看某节点详情 | `dream_memory_node` |
+| `/memory search <关键词>` | 同 `/dream search` | `dream_memory_search` |
 
 ## 配置（可选）
 

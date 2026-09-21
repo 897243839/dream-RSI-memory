@@ -75,6 +75,16 @@ export function dedupe(list: string[]): string[] {
     return [...new Set(list)]
 }
 
+/** Normalize user/model-supplied file paths into project-relative posix paths (drops root/outside). */
+export function normalizeFiles(root: string, files: string[]): string[] {
+    const out: string[] = []
+    for (const file of files) {
+        const norm = normalizeProjectPath(root, file)
+        if (norm) out.push(norm)
+    }
+    return dedupe(out)
+}
+
 export function truncate(value: string, max: number): string {
     if (value.length <= max) return value
     return value.slice(0, Math.max(0, max - 1)) + "…"

@@ -6,7 +6,7 @@ import type { MetaLlm } from "./meta-llm.js"
 import { nodeDetailText, replayOptsOf, statusText } from "./report.js"
 import type { MemoryStore } from "./store.js"
 import type { CommitInput, Outcome } from "./types.js"
-import { dedupe, normalizeProjectPath, truncate } from "./utils.js"
+import { normalizeFiles, truncate } from "./utils.js"
 
 export interface ToolDeps {
     client: unknown
@@ -15,15 +15,6 @@ export interface ToolDeps {
     logger: Logger
     collector: FileCollector
     meta: MetaLlm
-}
-
-function normalizeFiles(root: string, files: string[]): string[] {
-    const out: string[] = []
-    for (const file of files) {
-        const norm = normalizeProjectPath(root, file)
-        if (norm) out.push(norm)
-    }
-    return dedupe(out)
 }
 
 function outcomeLabel(outcome: Outcome): string {
@@ -44,7 +35,7 @@ export function createTools(deps: {
     // ------------------------------------------------------------------ commit
     const commitTool = tool({
         description:
-            "[dream-memory] 把当前回合（或指定的探索/踩坑/结论）记入长期记忆决策树节点。可在回合中获得新结论后调用；不传 summary/outcome 时会自动从对话素材中提取结构化字段。",
+            "[dream-memory] 把当前回合（或指定的探索/踩坑/结论）记入长期记忆决策树节点。可在回合中获得新结论后调用；不传 summary/outcome 时会自动从对话素材中提取结构化字段。聊天命令等价：/dream commit <结论摘要>。",
         args: {
             summary: s.string().optional().describe("一句话结论（≤60 字）。留空则从对话自动提取"),
             files: s.array(s.string()).optional().describe("本回合实际触碰的文件路径（项目相对或绝对）"),
@@ -96,7 +87,7 @@ export function createTools(deps: {
     // ---------------------------------------------------------------- search
     const searchTool = tool({
         description:
-            "[dream-memory] 在长期记忆决策树中检索过去相似任务的经验。开工前或卡壳时调用：按文件重合 + 语义/报错相似度 + 结果好坏加权排序，返回最近相关的历史节点。",
+            "[dream-memory] 在长期记忆决策树中检索过去相似任务的经验。开工前或卡壳时调用：按文件重合 + 语义/报错相似度 + 结果好坏加权排序，返回最近相关的历史节点。聊天命令等价：/dream search <关键词>。",
         args: {
             query: s.string().describe("检索意图/问题描述，尽量包含关键动作或领域词"),
             files: s.array(s.string()).optional().describe("涉及的文件路径，用于文件重合度匹配"),

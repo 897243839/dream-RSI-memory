@@ -242,3 +242,16 @@ test("reload round-trips turn order across sessions", async () => {
     assert.deepEqual(reloaded.sortedNodes().map((n) => n.nodeId), [...ids, reloaded.latestNode().nodeId])
     assert.ok(reloaded.latestNode().sessionId === "sess-y")
 })
+
+test("search: unrelated query must not score via empty bm25 (no phantom hits)", async () => {
+    const store = await loadStore()
+    store.commit({
+        summary: "invoice totals overflow silently on discount",
+        outcome: "failed",
+        files: ["src/inv.ts"],
+        sessionId: "sess-other",
+        agentName: "build",
+    })
+    const hits = store.search("zzzqqq nothing-here", [], { limit: 10 })
+    assert.equal(hits.length, 0, "no token overlap means bm25=0 → fts normalized to 0, not 1")
+})

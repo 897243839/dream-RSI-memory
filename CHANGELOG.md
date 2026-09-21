@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.4.4 — 2026-09
+
+**新增：补齐聊天命令**
+
+- 所有记忆库操作均可通过聊天命令触发，与 MCP 工具等价：
+  - `/dream commit <结论摘要>` — 记一条结论（等价 `dream_memory_commit`；摘要可带 `成功|失败|部分` 关键词，自动关联本轮触碰文件）
+  - `/dream search <关键词>`、`/memory search <关键词>` — 检索历史（等价 `dream_memory_search`）
+  - `/memory show <nodeId>` 沿用，`/dream status`、`/memory stats`、`/memory policy`、`/dream run` 不变
+  - 工具描述同步标注聊天命令等价写法
+- `normalizeFiles` 移入 `utils.ts` 供 hooks（idle 自动采集、/dream commit）与 tools 共用。
+
+**修复：无重叠关键词的幽灵命中**
+
+- `bm25Normalized` 对 `bm25 == 0` 返回 `1 / (1 + 0) = 1`，即 query 词与节点文档完全无重叠时 fts 仍满分，导致无关幻想命中（如搜 `nothing-here` 命中 invoice 节点，score 0.300）。现对 `bm25 <= 0` 直接返回 0。
+
 ## v0.4.3 — 2026-09
 
 **重构：配置段拆分，消除 describe 命名错位**

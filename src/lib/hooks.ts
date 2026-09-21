@@ -7,8 +7,8 @@ import type { MetaLlm } from "./meta-llm.js"
 import { renderMenuText } from "./prompts.js"
 import { dreamHelpText, nodeDetailText, policyListText, replayOptsOf, statusText } from "./report.js"
 import type { MemoryStore } from "./store.js"
-import type { MemoryConfig } from "./types.js"
-import { normalizeProjectPath, truncate } from "./utils.js"
+import type { MemoryConfig, Outcome } from "./types.js"
+import { normalizeFiles, truncate } from "./utils.js"
 
 const INTERNAL_AGENT_NAMES = new Set(["title", "summary", "compaction"])
 
@@ -160,6 +160,8 @@ export function createCommandExecuteHandler(
                 const sub = argv[0] ?? "status"
                 if (sub === "status") text = statusText(store, config)
                 else if (sub === "run") text = (await runDream(store, config, deps)).text
+                else if (sub === "search") text = searchCommandText(store, argv.slice(1))
+                else if (sub === "commit") text = commitCommandText(store, deps.collector, sessionID, argv.slice(1))
                 else text = dreamHelpText()
             } else {
                 const sub = argv[0] ?? "stats"
@@ -167,12 +169,62 @@ export function createCommandExecuteHandler(
                 else if (sub === "policy") text = policyListText(store)
                 else if (sub === "show" && argv[1]) text = nodeDetailText(store, argv[1])
                 else if (sub === "show") text = "[dream-memory] 用法：/memory show <nodeId>"
+                else if (sub === "search") text = searchCommandText(store, argv.slice(1))
                 else text = dreamHelpText()
             }
         } catch (error) {
             text = "[dream-memory] 命令执行失败：" + String(error)
         }
         await sendIgnoredMessage(client, sessionID, text, deps.logger)
+    }
+}
+
+function searchCommandText(store: MemoryStore, argTokens: string[]): string {
+    if (argTokens.length === 0) return "[dream-memory] 用法：/dream search <描述检索意图的关键词>"
+    const query = argTokens.join(" ")
+    const policy = store.activePolicy()
+    const limit = Math.min(policy.params.maxRecall, 10)
+    const hits = store.search(query, [], { limit })
+    const lines = [`[dream-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
+    for (const hit of hits) {
+        lines.push(
+            `• ${hit.node.nodeId} (turn ${hit.node.turnIndex}, ${hit.node.outcome}, score ${hit.score.toFixed(3)})` +
+                `\n  ${truncate(hit.node.summary || "（无摘要）", 160)}` +
+                (hit.node.why ? `\n  教训：${truncate(hit.node.why, 140)}` : ""),
+        )
+    }
+    if (hits.length === 0) lines.push(`  无结果。可先记录（/dream commit ...），或换关键词重试。`)
+    return lines.join("\n")
+}
+
+function commitCommandText(store: MemoryStore, collector: FileCollector, sessionID: string, argTokens: string[]): string {
+    if (argTokens.length === 0) return "[dream-memory] 用法：/dream commit <结论摘要，可含 成功|失败|部分 与仓库内文件路径>"
+const joined = argTokens.join(" ")
+    const result = parseCommitTokens(joined)
+    const outcome: Outcome = result.outcome
+    const summary = result.summary
+    if (!summary) return "[dream-memory] 用法：/dream commit <结论摘要>"
+    const touched = normalizeFiles(store.getRootPath(), collector.take(sessionID))
+    const node = store.commit({
+        summary: truncate(summary, 60),
+        outcome,
+        files: touched,
+        sessionId: sessionID,
+        agentName: "command",
+    })
+    const label = outcome === "success" ? "成功" : outcome === "failed" ? "失败" : "部分完成"
+    return `[dream-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${label}）` + (touched.length ? `，关联 ${touched.length} 个文件` : "") + `\nsummary：${node.summary}`
+}
+
+/** Pull an outcome keyword (成功|失败|部分|success|failed|partial) out of a free-form commit line. */
+function parseCommitTokens(joined: string): { outcome: "success" | "failed" | "partial"; summary: string } {
+    const tokens = joined.split(/\s+/)
+    const hit = tokens.find((t) => /^(成功|失败|部分|success|failed|partial)$/.test(t))
+    if (!hit) return { outcome: "partial", summary: joined.trim() }
+    const rest = tokens.filter((t) => t !== hit).join(" ").trim()
+    return {
+        outcome: hit === "成功" || hit === "success" ? "success" : hit === "失败" || hit === "failed" ? "failed" : "partial",
+        summary: rest,
     }
 }
 
@@ -208,10 +260,7 @@ export function createEventHandler(
                     outcome: extracted.outcome,
                     why: extracted.why,
                     errorMessage: extracted.errorMessage,
-                    files: collector
-                        .take(sessionID)
-                        .map((f) => normalizeProjectPath(store.getRootPath(), f))
-                        .filter((f): f is string => !!f),
+                    files: normalizeFiles(store.getRootPath(), collector.take(sessionID)),
                     sessionId: sessionID,
                     agentName: "idle",
                     autoCreated: true,

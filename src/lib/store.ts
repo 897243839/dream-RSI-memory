@@ -117,7 +117,8 @@ function makePolicy(policyId: string, params: RecallParams, dreamRound: number, 
 }
 
 function bm25Normalized(bm25: number): number {
-    return 1 / (1 + Math.abs(bm25))
+    if (bm25 <= 0) return 0
+    return 1 / (1 + bm25)
 }
 
 export class MemoryStore {

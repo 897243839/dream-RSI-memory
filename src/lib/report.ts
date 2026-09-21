@@ -72,10 +72,13 @@ export function nodeDetailText(store: MemoryStore, nodeId: string): string {
 export function dreamHelpText(): string {
     return [
         "用法：",
-        "  /dream status   — 记忆库+replay 概览",
-        "  /dream run      — 立即触发一次做梦优化（需足够节点）",
-        "  /memory stats   — 节点统计与当前策略",
-        "  /memory policy  — 全部策略列表",
-        "  /memory show <nodeId> — 查看某节点详情",
+        "  /dream status      — 记忆库+replay 概览（同 /memory stats）",
+        "  /dream run         — 立即触发一次做梦优化（需足够节点）",
+        "  /dream commit ...  — 记一条结论（摘要可带 成功|失败|部分，自动关联本轮触碰文件）",
+        "  /dream search ...  — 检索历史经验（关键词描述意图）",
+        "  /memory stats      — 节点统计与当前策略",
+        "  /memory policy     — 全部策略列表",
+        "  /memory show <id>  — 查看某节点详情",
+        "  /memory search ... — 同 /dream search",
     ].join("\n")
 }
