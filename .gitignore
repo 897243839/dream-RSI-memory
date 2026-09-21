@@ -2,6 +2,7 @@ node_modules/
 vendor/
 dist/
 dream-rsi-memory-vendor.tar.gz
+dream-rsi-memory-offline.tar.gz
 *.tsbuildinfo
 *.log
 .DS_Store

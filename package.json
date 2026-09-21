@@ -20,6 +20,7 @@
         "install:opencode": "node scripts/install.mjs",
         "install:opencode:offline": "node scripts/install.mjs --offline",
         "vendor": "node scripts/install.mjs --vendor",
+    "pack:offline": "node scripts/install.mjs --offline-package",
         "uninstall:opencode": "node scripts/install.mjs --uninstall",
         "prepublishOnly": "npm run build"
     },

@@ -27,10 +27,12 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 安装
 
-> 插件未发布到 npm registry。安装脚本在本地 opencode 缓存目录
-> （`~/.cache/opencode/packages/dream-rsi-memory@latest/`）建立安装，把
+> 插件未发布到 npm registry。安装脚本参考 `opencode-acp` 在本机的安装方式，
+> 在本地 opencode 缓存目录（`~/.cache/opencode/packages/dream-rsi-memory@latest/`）
+> 建立**自包含真实安装**（私有占位 manifest + `node_modules/` 全量真实拷贝，
+> 含 `@opencode-ai/plugin` 运行时闭包，无 junction/符号链接），再把
 > `"dream-rsi-memory"` 追加进配置的 `plugin` 数组，全部幂等可重跑。
-> 改代码后再次运行即可刷新，随后**重启 opencode** 生效。
+> 改代码后再次运行即可刷新这份快照，随后**重启 opencode** 生效。
 
 ### 联网机器
 
@@ -39,29 +41,40 @@ npm install        # 安装开发依赖（含 @opencode-ai/plugin、typescript�
 npm run install:opencode
 ```
 
-`install:opencode` 会：构建 `dist/` → 在 opencode 缓存目录建安装
-（junction/符号链接指回本仓库，随改随用）→ 追加 `plugin` 配置。
+`install:opencode` 会：构建 `dist/` → 用 `npm install --install-links` 在临时
+staging 目录安装 `@opencode-ai/plugin` 闭包（真实拷贝、不联网到仓库），再把
+插件本体 `package.json + dist/` 一并放入、原子替换缓存 scope（registry 不可达时
+自动回退为从仓库 `node_modules` 拷贝闭包）→ 追加 `plugin` 配置 → 冒烟自检
+（`import()` 校验 `default.id === "dream-memory"`）。
 
 ### 内网 / 离线机器（推荐，单文件即可）
 
-在任何联网机器上生成自包含离线资产：
+在任何联网机器上生成离线安装包（参考 `opencode-acp` 的离线打包方式：
+npm 安装包 + 预置 npm 离线缓存的完整闭包）：
 
 ```bash
-npm install        # 只有生成时这一台需要
-npm run vendor     # 产出 dream-rsi-memory-vendor.tar.gz（含构建产物+全部运行时依赖+安装脚本）
+npm install            # 只有生成时这一台需要
+npm run pack:offline   # 产出 dream-rsi-memory-offline.tar.gz（~21MB）
 ```
 
-把 **`dream-rsi-memory-vendor.tar.gz` 这一个文件**拷贝到内网目标机
-（U 盘 / 文件服务器 / 内网 git 镜像均可），然后：
+只拷贝这一个 `tar.gz` 到内网目标机，解压后执行（目标机需要 Node.js + npm 在 PATH，
+全程不联网、不访问任何 registry）：
 
 ```bash
-tar -xzf dream-rsi-memory-vendor.tar.gz
-node scripts/install.mjs --offline
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File install.ps1
+
+# Linux / macOS
+./install.sh
 ```
 
-`--offline` 全程离线：从 `vendor/` 恢复 `dist/`、把运行时依赖直接复制进
-opencode 缓存、追加 `plugin` 配置——**不联网、不装 npm 包、不编译**。
-脚本本身也随 tgz 分发，目标机无需任何仓库源码。
+安装器会把 tgz 拷入 opencode 缓存 scope，用随包携带的 `vendor/npm-cache`
+跑 `npm install --offline`（得到与 `opencode-acp` 一致的 npm 托管安装），
+写入私有 wrapper manifest、追加 `plugin` 配置并自检；结束后**重启 opencode**。
+
+> 备选：若目标机只有 Node.js 而没有 npm，仍可走旧方式——生成
+> `npm run vendor`（`dream-rsi-memory-vendor.tar.gz`），解压后
+> `node scripts/install.mjs --offline`（直接把运行时闭包复制进缓存，不装 npm 包）。
 
 ### 常用命令
 
