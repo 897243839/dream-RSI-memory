@@ -200,7 +200,7 @@ export function createEventHandler(
             const last = store.lastNodeCommittedAtMs(sessionID)
             if (last !== null && Date.now() - last < config.autoCommitIdleGapMs) return
             try {
-                const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
+                const material = await captureTurn(client, sessionID, config.capture.maxMaterialChars)
                 const extracted = extractNodeFields(material)
                 if (!extracted.summary || extracted.summary === "（无内容）") return
                 const node = store.commit({

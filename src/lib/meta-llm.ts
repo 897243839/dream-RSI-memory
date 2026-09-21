@@ -36,14 +36,14 @@ export class MetaLlm {
     ) {}
 
     get configured(): boolean {
-        const d = this.config.distill
-        return d.enabled && !!d.providerID && !!d.modelID
+        const c = this.config.curator
+        return c.enabled && !!c.providerID && !!c.modelID
     }
 
     private modelField(): { providerID: string; modelID: string } | undefined {
-        const d = this.config.distill
-        if (!d.providerID || !d.modelID) return undefined
-        return { providerID: d.providerID, modelID: d.modelID }
+        const c = this.config.curator
+        if (!c.providerID || !c.modelID) return undefined
+        return { providerID: c.providerID, modelID: c.modelID }
     }
 
     private async createTempSession(): Promise<string | null> {
@@ -95,7 +95,7 @@ export class MetaLlm {
                 },
             })
 
-            const deadline = Date.now() + this.config.distill.timeoutMs
+            const deadline = Date.now() + this.config.curator.timeoutMs
             let lastText: string | null = null
             while (Date.now() < deadline) {
                 await sleep(700)

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.4.3 — 2026-09
+
+**重构：配置段拆分，消除 describe 命名错位**
+
+- 原 `distill` 段名不副实（v0.4.0 已删除 LLM 蒸馏，`distill` 实际承载两件不同的事）。拆为两个语义对齐的段：
+  - `capture.maxMaterialChars`：素材采集预算（captureTurn 用，commit/search 自动抓取对话的最大字符数）
+  - `curator.*`：后台「馆藏管理员」LLM（dreaming 参数突变候选来源），`enabled` 默认 `false` + 需 `providerID`/`modelID` 才生效
+- 旧 `distill` 配置自动迁移（`maxMaterialChars`→`capture`，`enabled`/`providerID`/`modelID`/`timeoutMs`→`curator`），删除旧键。
+- 口头命名统一为「馆藏管理员」。
+
 ## v0.4.2 — 2026-09
 
 **修复：失败相似阈值统一**

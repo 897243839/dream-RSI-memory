@@ -23,7 +23,7 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
    （文件命中率 / 失败规避率 / 精确率 / 召回预算）的加权总分，只有稳健提升
    （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。
-4. **进化**：后台「馆藏官」小模型（可选）作为策略变异的启发式来源。
+4. **进化**：后台「馆藏管理员」LLM（可选）作为策略变异的启发式来源。
 
 ## 安装
 
@@ -110,12 +110,15 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
         "precision": 0.25,
         "recallBudget": 0.15
     },
-    // 后台「馆藏官」小模型（可选，默认关闭；用于 dreaming 参数突变）
-    "distill": {
-        "enabled": true,
+    // 素材采集预算（commit/search 抓取对话的最大字符数）
+    "capture": {
+        "maxMaterialChars": 6000
+    },
+    // 后台「馆藏管理员」LLM（可选，默认关闭；用于 dreaming 参数突变）
+    "curator": {
+        "enabled": false,
         "providerID": "anthropic",
-        "modelID": "claude-3-5-haiku-latest",
-        "maxMaterialChars": 6000,
+        "modelID": "claude-sonnet-4-20250514",
         "timeoutMs": 120000
     }
 }

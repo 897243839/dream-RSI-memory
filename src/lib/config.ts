@@ -19,9 +19,11 @@ const DEFAULTS: MemoryConfig = {
     enabled: true,
     dataDir: defaultDataDir(),
     debug: false,
-    distill: {
-        enabled: true,
+    capture: {
         maxMaterialChars: 6000,
+    },
+    curator: {
+        enabled: false,
         timeoutMs: 120_000,
     },
     menu: {
@@ -47,12 +49,40 @@ const DEFAULTS: MemoryConfig = {
     autoCommitIdleGapMs: 5 * 60_000,
 }
 
-const MERGE_KEYS = ["distill", "menu", "dream", "replayWeights"] as const
+const MERGE_KEYS = ["capture", "curator", "menu", "dream", "replayWeights"] as const
+
+function migrateLegacy(user: Record<string, unknown>): Record<string, unknown> {
+    // v0.4.2 及更早：distill 段同时承载素材预算与馆藏管理员配置。
+    // v0.4.3 拆为 capture（素材预算）与 curator（馆藏管理员）。旧键自动迁移。
+    const legacy = user["distill"]
+    if (!legacy || typeof legacy !== "object") return user
+
+    const out = { ...user }
+    const l = legacy as Record<string, unknown>
+    if (!out.capture || typeof out.capture !== "object") {
+        out.capture = { maxMaterialChars: l.maxMaterialChars ?? DEFAULTS.capture.maxMaterialChars }
+    } else if ((out.capture as Record<string, unknown>).maxMaterialChars === undefined && l.maxMaterialChars !== undefined) {
+        ;(out.capture as Record<string, unknown>).maxMaterialChars = l.maxMaterialChars
+    }
+    if (!out.curator || typeof out.curator !== "object") {
+        out.curator = {
+            enabled: l.enabled ?? DEFAULTS.curator.enabled,
+            providerID: l.providerID,
+            modelID: l.modelID,
+            timeoutMs: l.timeoutMs ?? DEFAULTS.curator.timeoutMs,
+        }
+    } else if ((out.curator as Record<string, unknown>).timeoutMs === undefined && l.timeoutMs !== undefined) {
+        ;(out.curator as Record<string, unknown>).timeoutMs = l.timeoutMs
+    }
+    delete out.distill
+    return out
+}
 
 function deepMerge(user: Record<string, unknown>): Partial<MemoryConfig> {
+    const migrated: Record<string, unknown> = migrateLegacy(user)
     const out: Record<string, unknown> = {}
-    for (const key of Object.keys(user)) {
-        const value = user[key]
+    for (const key of Object.keys(migrated)) {
+        const value = migrated[key]
         if (
             (MERGE_KEYS as readonly string[]).includes(key) &&
             value &&

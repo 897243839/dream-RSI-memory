@@ -122,11 +122,15 @@ export interface MemoryConfig {
     enabled: boolean
     dataDir: string
     debug: boolean
-    distill: {
+    /** Talk-to-turn material budget for captureTurn (commit/search auto-extraction). */
+    capture: {
+        maxMaterialChars: number
+    }
+    /** Optional background LLM that proposes parameter mutations during dreaming. */
+    curator: {
         enabled: boolean
         providerID?: string
         modelID?: string
-        maxMaterialChars: number
         timeoutMs: number
     }
     menu: {

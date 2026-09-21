@@ -63,7 +63,7 @@ export function createTools(deps: {
             const touched = collector.take(sessionID)
             const providedFiles = normalizeFiles(worktree, [...(args.files ?? []), ...touched])
 
-            const material = await captureTurn(client, sessionID, config.distill.maxMaterialChars)
+            const material = await captureTurn(client, sessionID, config.capture.maxMaterialChars)
             const extracted = extractNodeFields(material)
 
             const summary = args.summary?.trim() || extracted.summary

@@ -143,7 +143,7 @@ export async function runDream(
             `[dream-memory] 做梦完成：${n} 个节点下无 ≥ε(=${config.dream.epsilon}) 的稳健改进，保持策略 ${active.policyId}。\n` +
             `  train=${baseline.train.totalScore.toFixed(3)}${baseline.valid ? ` valid=${baseline.valid.totalScore.toFixed(3)}` : ""}\n` +
             `  最薄弱指标提示：${note}\n` +
-            (llmCount ? `  （馆藏官提出 ${llmCount} 组候选，均未通过 valid 校验）` : "")
+            (llmCount ? `  （馆藏管理员提出 ${llmCount} 组候选，均未通过 valid 校验）` : "")
     }
 
     store.recordDream({
