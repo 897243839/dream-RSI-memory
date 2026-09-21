@@ -18,6 +18,9 @@
         "typecheck": "tsc --noEmit",
         "test": "npm run build && node --test \"test/*.test.mjs\"",
         "install:opencode": "node scripts/install.mjs",
+        "install:opencode:offline": "node scripts/install.mjs --offline",
+        "vendor": "node scripts/install.mjs --vendor",
+        "uninstall:opencode": "node scripts/install.mjs --uninstall",
         "prepublishOnly": "npm run build"
     },
     "repository": {

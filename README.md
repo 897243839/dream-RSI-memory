@@ -27,30 +27,59 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 安装
 
-**一键安装**（推荐）：克隆本仓库后运行
+> 插件未发布到 npm registry。安装脚本在本地 opencode 缓存目录
+> （`~/.cache/opencode/packages/dream-rsi-memory@latest/`）建立安装，把
+> `"dream-rsi-memory"` 追加进配置的 `plugin` 数组，全部幂等可重跑。
+> 改代码后再次运行即可刷新，随后**重启 opencode** 生效。
+
+### 联网机器
 
 ```bash
-npm install        # 安装开发依赖（含 @opencode-ai/plugin）
+npm install        # 安装开发依赖（含 @opencode-ai/plugin、typescript）
 npm run install:opencode
 ```
 
-`install:opencode` 会依次：
-1. 构建 `dist/`
-2. 在 `~/.cache/opencode/packages/dream-rsi-memory@latest/` 建立插件安装目录
-   （通过 junction/符号链接指回本仓库，改代码后重新运行即可刷新，无需重下）
-3. 把 `"dream-rsi-memory"` 追加进 opencode 配置的 `plugin` 数组
-   （`~/.config/opencode/opencode.json` 或 `opencode.jsonc`，两者都未创建时创建 json）
-4. 输出安装路径与重启提示
+`install:opencode` 会：构建 `dist/` → 在 opencode 缓存目录建安装
+（junction/符号链接指回本仓库，随改随用）→ 追加 `plugin` 配置。
 
-脚本幂等，可反复运行；也可指定配置文件：`node scripts/install.mjs --config /path/to/opencode.json`。
+### 内网 / 离线机器（推荐）
 
-> 手动方式：
+在任何联网机器上生成自包含离线资产（含构建产物与全部运行时依赖）：
+
+```bash
+npm install        # 只有生成时这一台需要
+npm run vendor     # 产出 vendor/ + dream-rsi-memory-vendor.tar.gz
+```
+
+把仓库连同 `dream-rsi-memory-vendor.tar.gz` 拷贝到内网机器
+（U 盘 / 文件服务器 / git 内网镜像均可，导入方式见下），然后：
+
+```bash
+npm run install:opencode:offline     # 即 node scripts/install.mjs --offline
+```
+
+`--offline` 全程离线：若发现 `vendor/` 缺失会自动解包
+`dream-rsi-memory-vendor.tar.gz`，随后从 vendor 恢复 `dist/` 并把
+运行时依赖直接复制进 opencode 缓存——不联网、不装 npm 包、不编译。
+
+> git 传输时 `vendor/` 与 tgz 均在 `.gitignore` 中，不会进仓库；
+> 请把 tgz 放到内网仓库根目录（或经文件服务器分发给目标机）。
+
+### 常用命令
+
+```bash
+node scripts/install.mjs --config /path/to/opencode.json  # 指定配置文件
+node scripts/install.mjs --uninstall                      # 卸载（移除配置项+缓存）
+npm run install:opencode                                  # 同上 dev 安装
+```
+
+> 手动方式（不推荐）：
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
     "plugin": [
-        "dream-rsi-memory"          // npm 包名
+        "dream-rsi-memory"          // 需要脚本先在缓存目录建好安装
     ]
 }
 ```
@@ -64,8 +93,6 @@ npm run install:opencode
     ]
 }
 ```
-
-> 插件未发布到 npm registry，`"dream-rsi-memory"` 由安装脚本在本地缓存目录解析。
 
 ## 数据
 

@@ -1,6 +1,7 @@
 node_modules/
 vendor/
 dist/
+dream-rsi-memory-vendor.tar.gz
 *.tsbuildinfo
 *.log
 .DS_Store
