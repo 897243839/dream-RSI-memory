@@ -1,6 +1,7 @@
 import type { Part, UserMessage } from "@opencode-ai/sdk"
 import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
+import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE } from "./dream-nudge.js"
 import type { Logger } from "./logger.js"
 import type { GateRegistry } from "./menu.js"
 import type { MetaLlm } from "./meta-llm.js"
@@ -139,6 +140,23 @@ export function createMessagesTransformHandler(
         }
         messages[idx].parts.push(part)
         gate.markInjected(sessionID, stats.nodeCount)
+
+        // Dream nudge: inject when conditions are met
+        const ready = stats.nodeCount >= config.dream.minNodes
+        const stale = ready && (turnsSinceDream ?? 0) >= 10
+        if (ready) {
+            let nudge = DREAM_NUDGE_NODE_THRESHOLD
+            if (stale) nudge = DREAM_NUDGE_STALE
+            const nudgePart: Part = {
+                id: "dream-nudge-" + Date.now().toString(36),
+                sessionID,
+                messageID: userInfo.id,
+                type: "text",
+                text: nudge,
+                synthetic: true,
+            }
+            messages[idx].parts.push(nudgePart)
+        }
     }
 }
 
