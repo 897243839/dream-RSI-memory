@@ -34,6 +34,8 @@ export interface MenuRenderInput {
     minNodes: number
     maxTokensHint: number
     teaser?: string
+    turnsSinceDream?: number
+    lastDreamAt?: string
 }
 
 /**
@@ -41,15 +43,21 @@ export interface MenuRenderInput {
  * 无命中时退出为空串（不刷屏）。
  */
 export function renderMenuText(input: MenuRenderInput): string {
-    const { nodeCount, policyId, minNodes, maxTokensHint, teaser } = input
+    const { nodeCount, policyId, minNodes, maxTokensHint, teaser, turnsSinceDream, lastDreamAt } = input
     const replayTrain = input.replayTrain ?? 0
-    const sizeLine =
-        nodeCount < minNodes
-            ? `记忆库当前 ${nodeCount} 条（<${minNodes}），尚未到自动进化阈值`
+    const ready = nodeCount >= minNodes
+    const stale = ready && (turnsSinceDream ?? 0) >= 10
+
+    const sizeLine = !ready
+        ? `记忆库当前 ${nodeCount} 条（<${minNodes}），尚未到自动进化阈值`
+        : stale
+            ? `记忆库 ${nodeCount} 条，策略 ${policyId}，**应**执行 dream_memory_dream 进化（距上次已 ${turnsSinceDream} 节点）`
             : `记忆库 ${nodeCount} 条，策略 ${policyId}，可 dream_memory_dream 自我进化`
+    const dreamTimeLine = lastDreamAt ? `上次进化：${lastDreamAt}` : ""
     const teaserLine = teaser ? `命中历史：${teaser}` : ""
     return [
         `[dream-memory] ${sizeLine}`,
+        dreamTimeLine,
         teaserLine,
         "可动作（跟不跟着做均可）：",
         "- dream_memory_search 检索历史经验",

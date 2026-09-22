@@ -117,7 +117,16 @@ export function createTools(deps: {
                         (hit.node.files.length ? `\n  文件：${hit.node.files.slice(0, 3).join(", ")}` : ""),
                 )
             }
-            if (hits.length === 0) lines.push("  无结果。可先 dream_memory_commit 记录当前局面，或换关键词/加文件路径重试。")
+            if (hits.length === 0) {
+                lines.push("  无结果。可先 dream_memory_commit 记录当前局面，或换关键词/加文件路径重试。")
+            } else {
+                const topScore = hits[0].score
+                if (topScore < 0.15) {
+                    lines.push(`\n  ⚠ 检索质量低（top=${topScore.toFixed(3)}），建议 dream_memory_dream 进化策略`)
+                } else if (topScore < 0.3) {
+                    lines.push(`\n  检索质量一般（top=${topScore.toFixed(3)}），可 dream_memory_dream 优化策略`)
+                }
+            }
             return lines.join("\n")
         },
     })

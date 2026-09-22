@@ -106,6 +106,18 @@ export function createMessagesTransformHandler(
             .map((p) => p.text as string)
             .join("\n")
         const teaser = teaserFor(store, queryText, collector.peek(sessionID), sessionID)
+        const latestDream = store.latestDream()
+        let turnsSinceDream: number | undefined
+        let lastDreamAt: string | undefined
+        if (latestDream?.finishedAt) {
+            const dreamTime = Date.parse(latestDream.finishedAt)
+            if (!Number.isNaN(dreamTime)) {
+                const allNodes = store.sortedNodes()
+                turnsSinceDream = allNodes.filter((n) => Date.parse(n.createdAt) > dreamTime).length
+                const d = new Date(dreamTime)
+                lastDreamAt = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`
+            }
+        }
         const title = renderMenuText({
             nodeCount: stats.nodeCount,
             policyId: stats.policyId,
@@ -113,6 +125,8 @@ export function createMessagesTransformHandler(
             minNodes: config.dream.minNodes,
             maxTokensHint: config.menu.maxTokensHint,
             teaser,
+            turnsSinceDream,
+            lastDreamAt,
         })
         const userInfo = lastMessage.info as UserMessage
         const part: Part = {
