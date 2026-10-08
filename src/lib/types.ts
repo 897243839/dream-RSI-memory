@@ -152,7 +152,7 @@ export interface MemoryConfig {
         precision: number
         recallBudget: number
     }
-    /** Auto-record a partial node when a session edits files and goes idle without dream_memory_commit. */
+    /** Auto-record a partial node when a session edits files and goes idle without dream_rsi_memory_commit. */
     autoCommitOnIdle: boolean
     /** Minimum gap between an idle auto-commit and the session's last recorded node. */
     autoCommitIdleGapMs: number

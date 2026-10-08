@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## v2.0.1 · 2026-10-08
+
+**破坏性变更：全量改名为 `dream-rsi-memory`（工具名变化对旧调用是 breaking）**
+
+- 插件 id、输出/日志前缀、配置文件名、数据目录三层统一为 `dream-rsi-memory`：
+  - 插件 id：`dream-memory` → `dream-rsi-memory`
+  - 输出/日志前缀：`[dream-memory]` → `[dream-rsi-memory]`（工具描述、命令回显、logger、菜单/系统提示、注入标记）
+  - 配置文件：`dream-memory.json(c)` → `dream-rsi-memory.json(c)`；各查找位置**新名优先、旧名兜底**（升级用户的旧名配置不丢）
+  - 数据目录：`…/opencode/storage/plugin/dream-memory/` → `…/dream-rsi-memory/`
+- **工具名改名（breaking）**——旧工具名调用会直接失败：
+
+  | 旧（≤ 2.0.0） | 新（2.0.1） |
+  | --- | --- |
+  | `dream_memory_commit` | `dream_rsi_memory_commit` |
+  | `dream_memory_search` | `dream_rsi_memory_search` |
+  | `dream_memory_node` | `dream_rsi_memory_node` |
+  | `dream_memory_status` | `dream_rsi_memory_status` |
+  | `dream_memory_policy` | `dream_rsi_memory_policy` |
+  | `dream_memory_dream` | `dream_rsi_memory_dream` |
+
+  聊天命令 `/dream *`、`/memory *` 不变；npm 包名 `dream-rsi-memory` 不变。
+- **旧数据目录自动迁移**：启动（`resolveConfig`）时，仅当使用**默认**数据目录且新目录
+  不存在、旧 `dream-memory/` 存在 → 整体 `rename` 过去；新旧目录都存在 → 用新目录、
+  旧目录原样保留（绝不合并/覆盖）并提示残留路径；用户显式配置 `dataDir` 的一律不碰。
+  失败原样抛出，不静默吞。配置文件读取同步加旧名 fallback。
+- `scripts/install.mjs` 冒烟校验（dist 魔串、`default.id`）同步改为新名。
+- 版本 2.0.0 → 2.0.1；`test/config.test.mjs` 新增旧配置名 fallback、数据目录迁移
+  （迁移/双目录并存/显式 dataDir 跳过）用例，测试全程沙箱 `XDG_DATA_HOME`。
+
 ## v2.0.0 · 2026-10
 
 **破坏性变更：整体迁移到 opencode 2.x 的 V2 插件 API（不再支持 opencode 1.x）**

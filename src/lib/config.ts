@@ -1,17 +1,49 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, renameSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { MemoryConfig } from "./types.js"
 import { stripJsonc } from "./utils.js"
 
-function defaultDataDir(): string {
+/** v2.0.1 起插件 id / 数据目录 / 配置文件统一为 `dream-rsi-memory`（v2.0.0 及更早叫 `dream-memory`）。 */
+const PLUGIN_DIR_NAME = "dream-rsi-memory"
+/** legacy（v2.0.1 改名前）旧名，勿删：升级用户的旧数据目录与旧配置文件仍用这个名字。 */
+const LEGACY_PLUGIN_DIR_NAME = "dream-memory"
+
+function pluginStorageRoot(): string {
     return join(
         process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
         "opencode",
         "storage",
         "plugin",
-        "dream-memory",
     )
+}
+
+function defaultDataDir(): string {
+    return join(pluginStorageRoot(), PLUGIN_DIR_NAME)
+}
+
+/** legacy 数据目录（v2.0.1 改名前），仅用于启动迁移，勿删。 */
+function legacyDataDir(): string {
+    return join(pluginStorageRoot(), LEGACY_PLUGIN_DIR_NAME)
+}
+
+/**
+ * v2.0.1 数据目录迁移：`…/storage/plugin/dream-memory` → `…/dream-rsi-memory`。
+ * 只在解析到**默认**数据目录时执行（用户显式配置过 `dataDir` 的一律不碰）：
+ * - 新目录不存在、旧目录存在 → 整体 `renameSync`（失败原样抛出，不静默吞）；
+ * - 新旧都存在 → 用新目录，旧目录**原样保留**（绝不合并/覆盖），仅提示残留路径。
+ * 只在启动（resolveConfig）时执行一次；不要在旧版插件仍在运行时手工搬目录。
+ */
+function migrateLegacyDataDir(newDir: string): void {
+    if (newDir !== defaultDataDir()) return
+    const oldDir = legacyDataDir()
+    if (!existsSync(oldDir)) return
+    if (existsSync(newDir)) {
+        console.log(`[dream-rsi-memory] 旧数据目录残留（未合并，继续使用新目录）：${oldDir}`)
+        return
+    }
+    renameSync(oldDir, newDir)
+    console.log(`[dream-rsi-memory] 已把旧数据目录迁移到新位置：${newDir}`)
 }
 
 const DEFAULTS: MemoryConfig = {
@@ -109,6 +141,16 @@ function readJsonCandidates(candidates: string[]): Record<string, unknown> | nul
     return null
 }
 
+/** 单个位置内的配置文件名：新名在前；旧名兜底（legacy，勿删——升级用户配置文件不丢）。 */
+function configNamesIn(dir: string): string[] {
+    return [
+        join(dir, "dream-rsi-memory.jsonc"),
+        join(dir, "dream-rsi-memory.json"),
+        join(dir, "dream-memory.jsonc"), // legacy 旧名（v2.0.1 改名前），勿删
+        join(dir, "dream-memory.json"), // legacy 旧名（v2.0.1 改名前），勿删
+    ]
+}
+
 /** Resolution order: $OPENCODE_CONFIG_DIR → project root/.opencode → project root → ~/.config/opencode
  *
  * V2: `ctx` 只需要项目目录（V1 的 `PluginInput.directory` → V2 的 `ctx.location.directory`）。
@@ -116,22 +158,16 @@ function readJsonCandidates(candidates: string[]): Record<string, unknown> | nul
 export function resolveConfig(ctx?: { directory?: string }): MemoryConfig {
     const candidates: string[] = []
     const configDir = process.env.OPENCODE_CONFIG_DIR
-    if (configDir) {
-        candidates.push(join(configDir, "dream-memory.jsonc"), join(configDir, "dream-memory.json"))
-    }
+    if (configDir) candidates.push(...configNamesIn(configDir))
     if (ctx?.directory) {
-        candidates.push(
-            join(ctx.directory, ".opencode", "dream-memory.jsonc"),
-            join(ctx.directory, ".opencode", "dream-memory.json"),
-            join(ctx.directory, "dream-memory.jsonc"),
-            join(ctx.directory, "dream-memory.json"),
-        )
+        candidates.push(...configNamesIn(join(ctx.directory, ".opencode")))
+        candidates.push(...configNamesIn(ctx.directory))
     }
-    candidates.push(
-        join(homedir(), ".config", "opencode", "dream-memory.jsonc"),
-        join(homedir(), ".config", "opencode", "dream-memory.json"),
-    )
+    candidates.push(...configNamesIn(join(homedir(), ".config", "opencode")))
 
     const user = readJsonCandidates(candidates)
-    return { ...DEFAULTS, ...(user ? deepMerge(user) : {}) }
+    const merged: Partial<MemoryConfig> = user ? deepMerge(user) : {}
+    if (merged.dataDir === undefined) migrateLegacyDataDir(defaultDataDir())
+    const dataDir = typeof merged.dataDir === "string" && merged.dataDir ? merged.dataDir : defaultDataDir()
+    return { ...DEFAULTS, ...merged, dataDir }
 }

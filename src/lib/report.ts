@@ -22,7 +22,7 @@ export function statusText(store: MemoryStore, config: MemoryConfig): string {
         .sortedNodes()
         .reduce((sum, n) => (n.autoCreated ? sum + 1 : sum), 0)
     const lines = [
-        "[dream-memory] 项目记忆库",
+        "[dream-rsi-memory] 项目记忆库",
         `  ${nodeStatsText(store)}${autoCount ? `（其中 idle 自动采集 ${autoCount} 个）` : ""}`,
         `  当前策略：${active.policyId}`,
         `  params：${JSON.stringify(active.params)}`,
@@ -45,7 +45,7 @@ export function statusText(store: MemoryStore, config: MemoryConfig): string {
 
 export function policyListText(store: MemoryStore): string {
     const policies = store.listPolicies()
-    const lines = ["[dream-memory] 策略列表（dreamRound 升序）："]
+    const lines = ["[dream-rsi-memory] 策略列表（dreamRound 升序）："]
     if (policies.length === 0) lines.push("  （无）")
     for (const p of policies) {
         lines.push(`  ${p.policyId}${p.isActive ? " (active)" : ""} — ${JSON.stringify(p.params)}${p.parentPolicyId ? ` \u2190 ${p.parentPolicyId}` : ""}`)
@@ -55,9 +55,9 @@ export function policyListText(store: MemoryStore): string {
 
 export function nodeDetailText(store: MemoryStore, nodeId: string): string {
     const node = store.getNode(nodeId)
-    if (!node) return `[dream-memory] 节点 ${nodeId} 不存在。`
+    if (!node) return `[dream-rsi-memory] 节点 ${nodeId} 不存在。`
     const lines: (string | null)[] = [
-        `[dream-memory] 节点 ${node.nodeId}`,
+        `[dream-rsi-memory] 节点 ${node.nodeId}`,
         `  turn ${node.turnIndex} · ${node.outcome} · agent=${node.agentName} · session ${node.sessionId.slice(0, 8)}`,
         `  summary：${node.summary}`,
         `  why：${node.why ?? "—"}`,

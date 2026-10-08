@@ -48,15 +48,15 @@ function lastUserIndex(messages: TransformMessage[]): number {
 
 function systemHelp(): string {
     return [
-        "[dream-memory] 长期记忆工具（按需调用，非每回合必须）",
-        "开工前若怀疑过去做过类似任务，可用 dream_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
+        "[dream-rsi-memory] 长期记忆工具（按需调用，非每回合必须）",
+        "开工前若怀疑过去做过类似任务，可用 dream_rsi_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_rsi_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_rsi_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
     ].join("\n")
 }
 
 export function createSystemPromptHandler(config: MemoryConfig): ((input: unknown, output: { system: string[] }) => Promise<void>) | undefined {
     if (!config.enabled || !config.menu.enabled) return undefined
     return async (_input, output) => {
-        const marker = "[dream-memory]"
+        const marker = "[dream-rsi-memory]"
         if (output.system.some((s) => s.includes(marker))) return
         output.system.push(systemHelp())
     }
@@ -65,7 +65,7 @@ export function createSystemPromptHandler(config: MemoryConfig): ((input: unknow
 /**
  * Lightweight teaser: search the last user message against the whole store and,
  * if the top hit comes from a *different* session, emit a one-line hint so the
- * model sees the promised "命中历史" trigger and follows up with dream_memory_search.
+ * model sees the promised "命中历史" trigger and follows up with dream_rsi_memory_search.
  * Same-session nodes are skipped: reminding the model of its own recent work is noise.
  */
 function teaserFor(store: MemoryStore, queryText: string, files: string[], sessionID: string): string {
@@ -200,24 +200,24 @@ export function createCommandExecuteHandler(
                 if (sub === "stats") text = statusText(store, config)
                 else if (sub === "policy") text = policyListText(store)
                 else if (sub === "show" && argv[1]) text = nodeDetailText(store, argv[1])
-                else if (sub === "show") text = "[dream-memory] 用法：/memory show <nodeId>"
+                else if (sub === "show") text = "[dream-rsi-memory] 用法：/memory show <nodeId>"
                 else if (sub === "search") text = searchCommandText(store, argv.slice(1))
                 else text = dreamHelpText()
             }
         } catch (error) {
-            text = "[dream-memory] 命令执行失败：" + String(error)
+            text = "[dream-rsi-memory] 命令执行失败：" + String(error)
         }
         await sendIgnoredMessage(client, sessionID, text, deps.logger)
     }
 }
 
 function searchCommandText(store: MemoryStore, argTokens: string[]): string {
-    if (argTokens.length === 0) return "[dream-memory] 用法：/dream search <描述检索意图的关键词>"
+    if (argTokens.length === 0) return "[dream-rsi-memory] 用法：/dream search <描述检索意图的关键词>"
     const query = argTokens.join(" ")
     const policy = store.activePolicy()
     const limit = Math.min(policy.params.maxRecall, 10)
     const hits = store.search(query, [], { limit })
-    const lines = [`[dream-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
+    const lines = [`[dream-rsi-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
     for (const hit of hits) {
         lines.push(
             `• ${hit.node.nodeId} (turn ${hit.node.turnIndex}, ${hit.node.outcome}, score ${hit.score.toFixed(3)})` +
@@ -230,12 +230,12 @@ function searchCommandText(store: MemoryStore, argTokens: string[]): string {
 }
 
 function commitCommandText(store: MemoryStore, collector: FileCollector, sessionID: string, argTokens: string[]): string {
-    if (argTokens.length === 0) return "[dream-memory] 用法：/dream commit <结论摘要，可含 成功|失败|部分 与仓库内文件路径>"
+    if (argTokens.length === 0) return "[dream-rsi-memory] 用法：/dream commit <结论摘要，可含 成功|失败|部分 与仓库内文件路径>"
 const joined = argTokens.join(" ")
     const result = parseCommitTokens(joined)
     const outcome: Outcome = result.outcome
     const summary = result.summary
-    if (!summary) return "[dream-memory] 用法：/dream commit <结论摘要>"
+    if (!summary) return "[dream-rsi-memory] 用法：/dream commit <结论摘要>"
     const touched = normalizeFiles(store.getRootPath(), collector.take(sessionID))
     const node = store.commit({
         summary: truncate(summary, 60),
@@ -245,7 +245,7 @@ const joined = argTokens.join(" ")
         agentName: "command",
     })
     const label = outcome === "success" ? "成功" : outcome === "failed" ? "失败" : "部分完成"
-    return `[dream-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${label}）` + (touched.length ? `，关联 ${touched.length} 个文件` : "") + `\nsummary：${node.summary}`
+    return `[dream-rsi-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${label}）` + (touched.length ? `，关联 ${touched.length} 个文件` : "") + `\nsummary：${node.summary}`
 }
 
 /** Pull an outcome keyword (成功|失败|部分|success|failed|partial) out of a free-form commit line. */

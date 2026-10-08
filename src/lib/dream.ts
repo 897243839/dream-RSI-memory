@@ -28,7 +28,7 @@ type MetricKey = keyof ReplayMetrics & ("fileHitRate" | "failureAvoidRate" | "pr
 
 /**
  * Note that drives the candidates. Without `focus` it's the weakest metric;
- * with `focus` the requested aspect wins (matching the dream_memory_dream
+ * with `focus` the requested aspect wins (matching the dream_rsi_memory_dream
  * `focus` arg: file recall / failure avoid / precision / budget).
  */
 function noteFor(metrics: ReplayMetrics, weights: MemoryConfig["replayWeights"], focus?: string): string {
@@ -96,7 +96,7 @@ export async function runDream(
     const runId = "r-" + randomUUID().slice(0, 8)
     const n = store.count()
     if (n < config.dream.minNodes) {
-        return { runId, text: `[dream-memory] 做梦跳过：节点数 ${n} < ${config.dream.minNodes}（还需 ${config.dream.minNodes - n} 个）。` }
+        return { runId, text: `[dream-rsi-memory] 做梦跳过：节点数 ${n} < ${config.dream.minNodes}（还需 ${config.dream.minNodes - n} 个）。` }
     }
 
     const replayOpts = { trainRatio: config.dream.trainRatio, weights: config.replayWeights }
@@ -133,14 +133,14 @@ export async function runDream(
         store.patchPolicyMeta(policyId, { replayAtCreation: { train: best.train, valid: best.valid } })
         chosen = policyId
         text =
-            `[dream-memory] 做梦完成：基于 ${n} 个节点，策略 ${active.policyId} → ${policyId}。\n` +
+            `[dream-rsi-memory] 做梦完成：基于 ${n} 个节点，策略 ${active.policyId} → ${policyId}。\n` +
             `  train ${baseline.train.totalScore.toFixed(3)} → ${best.train.toFixed(3)}` +
             (baseline.valid ? `，valid ${baseline.valid.totalScore.toFixed(3)} → ${(best.valid ?? 0).toFixed(3)}` : "") +
             `\n  新参数：${JSON.stringify(best.params)}\n  依据：${note}`
     } else {
         chosen = active.policyId
         text =
-            `[dream-memory] 做梦完成：${n} 个节点下无 ≥ε(=${config.dream.epsilon}) 的稳健改进，保持策略 ${active.policyId}。\n` +
+            `[dream-rsi-memory] 做梦完成：${n} 个节点下无 ≥ε(=${config.dream.epsilon}) 的稳健改进，保持策略 ${active.policyId}。\n` +
             `  train=${baseline.train.totalScore.toFixed(3)}${baseline.valid ? ` valid=${baseline.valid.totalScore.toFixed(3)}` : ""}\n` +
             `  最薄弱指标提示：${note}\n` +
             (llmCount ? `  （馆藏管理员提出 ${llmCount} 组候选，均未通过 valid 校验）` : "")

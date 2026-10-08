@@ -243,7 +243,7 @@ export function toV2Tool(
                 abort: ctx?.signal ?? new AbortController().signal,
                 metadata: () => undefined,
                 ask: async () => {
-                    throw new Error(`[dream-memory] ${name}: ask() 在 opencode 2.x 插件里不可用`)
+                    throw new Error(`[dream-rsi-memory] ${name}: ask() 在 opencode 2.x 插件里不可用`)
                 },
             }
             const result = await (

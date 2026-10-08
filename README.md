@@ -15,9 +15,9 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 
 ## 机制
 
-1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `dream_memory_commit`
-   （把结论/踩坑记成决策树节点）、`dream_memory_search`（开工前检索历史）、
-   或 `dream_memory_dream`（做梦）。
+1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `dream_rsi_memory_commit`
+   （把结论/踩坑记成决策树节点）、`dream_rsi_memory_search`（开工前检索历史）、
+   或 `dream_rsi_memory_dream`（做梦）。
 2. **检索**：7 个浮点参数（文件重合权重 / FTS 权重 / 成功加成 / 失败加成 /
    时衰半衰期 / 召回上限 / 最低分数）决定候选如何排序；失败节点天然高价值。
 3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
@@ -52,7 +52,7 @@ staging 目录安装 `@opencode-ai/plugin` 闭包（真实拷贝、不联网到�
 插件本体 `package.json + index.js + dist/` 一并放入、原子替换缓存 scope（registry
 不可达时自动回退为从仓库 `node_modules` 拷贝闭包）→ 把**包目录**追加进 `plugin`
 配置（旧的裸包名 / 文件路径条目会原地升级）→ 冒烟自检
-（`import()` 校验 `default.id === "dream-memory"` 且 `default.setup` 是函数）。
+（`import()` 校验 `default.id === "dream-rsi-memory"` 且 `default.setup` 是函数）。
 
 ### 内网 / 离线机器（推荐，单文件即可）
 
@@ -118,12 +118,12 @@ npm run install:opencode                                  # 同上 dev 安装
 ```
 
 > 桌面版（opencode GUI）以无项目目录启动时，插件自动回退到用户主目录注册，
-> 因此 `/dream*`、`/memory*` 命令与 `dream_memory_*` 工具始终可用。
+> 因此 `/dream*`、`/memory*` 命令与 `dream_rsi_memory_*` 工具始终可用。
 
 ## 数据
 
 每个项目（按工作区路径哈希）一份，默认落盘在：
-`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-memory/<projectId>/`
+`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-rsi-memory/<projectId>/`
 纯 JSON、无数据库。目录结构：
 
 ```
@@ -135,16 +135,23 @@ npm run install:opencode                                  # 同上 dev 安装
 写入时只重写对应会话文件与小型索引，不再每次全量重写整个项目；旧版单个 `memory.json`
 在启动时自动迁移为 v2 布局（原文件改名 `memory.json.bak`）。
 
+> **v2.0.1 改名迁移**：插件 id / 输出前缀 / 配置文件名 / 数据目录由 `dream-memory`
+> 统一改为 `dream-rsi-memory`，工具名 `dream_memory_*` 改为 `dream_rsi_memory_*`
+> （对旧工具调用是 **breaking**；`/dream*`、`/memory*` 命令不变）。启动时若默认新
+> 数据目录不存在而旧 `storage/plugin/dream-memory/` 存在，会**自动整体迁移**（rename）；
+> 新旧目录都在时使用新目录、旧目录原样保留（绝不合并/覆盖）。旧名配置文件
+> `dream-memory.json(c)` 仍可读取（同目录内新名优先）。
+
 ## 工具（模型按需调用）
 
 | 工具 | 作用 |
 | --- | --- |
-| `dream_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
-| `dream_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
-| `dream_memory_node` | 查看节点详情 |
-| `dream_memory_status` | 记忆库状态 + replay 指标 |
-| `dream_memory_policy` | 手动切换检索策略 |
-| `dream_memory_dream` | 触发一次「做梦」优化策略 |
+| `dream_rsi_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
+| `dream_rsi_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
+| `dream_rsi_memory_node` | 查看节点详情 |
+| `dream_rsi_memory_status` | 记忆库状态 + replay 指标 |
+| `dream_rsi_memory_policy` | 手动切换检索策略 |
+| `dream_rsi_memory_dream` | 触发一次「做梦」优化策略 |
 
 回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
 （冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction
@@ -154,18 +161,18 @@ npm run install:opencode                                  # 同上 dev 安装
 
 | 命令 | 作用 | 等价工具 |
 | --- | --- | --- |
-| `/dream status` | 记忆库 + replay 概览 | `dream_memory_status` |
-| `/dream run` | 立即触发一次做梦优化 | `dream_memory_dream` |
-| `/dream commit <结论摘要>` | 记一条结论（可带 `成功\|失败\|部分`，自动关联本轮触碰文件） | `dream_memory_commit` |
-| `/dream search <关键词>` | 检索历史经验 | `dream_memory_search` |
-| `/memory stats` | 节点统计与当前策略（同 `/dream status`） | `dream_memory_status` |
-| `/memory policy` | 全部策略列表 | `dream_memory_policy` |
-| `/memory show <nodeId>` | 查看某节点详情 | `dream_memory_node` |
-| `/memory search <关键词>` | 同 `/dream search` | `dream_memory_search` |
+| `/dream status` | 记忆库 + replay 概览 | `dream_rsi_memory_status` |
+| `/dream run` | 立即触发一次做梦优化 | `dream_rsi_memory_dream` |
+| `/dream commit <结论摘要>` | 记一条结论（可带 `成功\|失败\|部分`，自动关联本轮触碰文件） | `dream_rsi_memory_commit` |
+| `/dream search <关键词>` | 检索历史经验 | `dream_rsi_memory_search` |
+| `/memory stats` | 节点统计与当前策略（同 `/dream status`） | `dream_rsi_memory_status` |
+| `/memory policy` | 全部策略列表 | `dream_rsi_memory_policy` |
+| `/memory show <nodeId>` | 查看某节点详情 | `dream_rsi_memory_node` |
+| `/memory search <关键词>` | 同 `/dream search` | `dream_rsi_memory_search` |
 
 ## 配置（可选）
 
-任一位置（按优先级）放置 `dream-memory.jsonc` / `dream-memory.json`：
+任一位置（按优先级）放置 `dream-rsi-memory.jsonc` / `dream-rsi-memory.json`：
 `$OPENCODE_CONFIG_DIR/` → 项目 `.opencode/` → 项目根 → `~/.config/opencode/`。
 
 ```jsonc
