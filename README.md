@@ -30,9 +30,15 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 > 插件未发布到 npm registry。安装脚本参考 `opencode-acp` 在本机的安装方式，
 > 在本地 opencode 缓存目录（`~/.cache/opencode/packages/dream-rsi-memory@latest/`）
 > 建立**自包含真实安装**（私有占位 manifest + `node_modules/` 全量真实拷贝，
-> 含 `@opencode-ai/plugin` 运行时闭包，无 junction/符号链接），再把
-> `"dream-rsi-memory"` 追加进配置的 `plugin` 数组，全部幂等可重跑。
+> 含 `@opencode-ai/plugin` 运行时闭包，无 junction/符号链接），再把**包目录**
+> （不是文件）追加进配置的 `plugin` 数组，全部幂等可重跑。
 > 改代码后再次运行即可刷新这份快照，随后**重启 opencode** 生效。
+>
+> ⚠️ **opencode 2.x 只接受目录条目**：写文件路径会被打
+> `configured plugin path must be a directory` 并**静默丢弃**（插件完全不加载），
+> 写裸包名则每次启动都去 registry 跑一次 `npm install`。2.x 解析目录时用
+> `Bun.resolveSync("<dir>/server")` → `"<dir>/index"`，**不读 `package.json` 的
+> `main`** —— 仓库根的 `index.js` 就是为此存在的入口 shim。
 
 ### 联网机器
 
@@ -43,9 +49,10 @@ npm run install:opencode
 
 `install:opencode` 会：构建 `dist/` → 用 `npm install --install-links` 在临时
 staging 目录安装 `@opencode-ai/plugin` 闭包（真实拷贝、不联网到仓库），再把
-插件本体 `package.json + dist/` 一并放入、原子替换缓存 scope（registry 不可达时
-自动回退为从仓库 `node_modules` 拷贝闭包）→ 追加 `plugin` 配置 → 冒烟自检
-（`import()` 校验 `default.id === "dream-memory"`）。
+插件本体 `package.json + index.js + dist/` 一并放入、原子替换缓存 scope（registry
+不可达时自动回退为从仓库 `node_modules` 拷贝闭包）→ 把**包目录**追加进 `plugin`
+配置（旧的裸包名 / 文件路径条目会原地升级）→ 冒烟自检
+（`import()` 校验 `default.id === "dream-memory"` 且 `default.setup` 是函数）。
 
 ### 内网 / 离线机器（推荐，单文件即可）
 
@@ -84,23 +91,28 @@ node scripts/install.mjs --uninstall                      # 卸载（移除配�
 npm run install:opencode                                  # 同上 dev 安装
 ```
 
-> 手动方式（不推荐）：
+> 手动方式（不推荐，仍需先跑一次安装脚本把闭包放进缓存）：
+>
+> ⚠️ 条目必须是**目录**；裸包名 `dream-rsi-memory` 会让 opencode 每次启动都去
+> registry 跑 `npm install`（registry 不可达时直接卡住会话启动）。
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
     "plugin": [
-        "dream-rsi-memory"          // 需要脚本先在缓存目录建好安装
+        // 缓存里的安装目录（含 package.json + index.js + dist/）
+        "C:/Users/<you>/.cache/opencode/packages/dream-rsi-memory@latest/node_modules/dream-rsi-memory"
     ]
 }
 ```
 
-或加载本地构建产物（先 `npm run build`）：
+或直接指向本地构建产物（先 `npm run build`；**是目录，不是 `dist/index.js` 文件**，
+2.x 会把文件条目当非法值丢掉）：
 
 ```jsonc
 {
     "plugin": [
-        "D:/path/to/dream-rsi-memory/dist/index.js"
+        "D:/path/to/dream-rsi-memory"
     ]
 }
 ```

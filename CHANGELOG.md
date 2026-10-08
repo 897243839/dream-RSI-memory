@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v2.0.0 · 2026-10
+
+**破坏性变更：整体迁移到 opencode 2.x 的 V2 插件 API（不再支持 opencode 1.x）**
+
+- 入口由 V1 `{ id, server(input) }` 改为 V2 `{ id, setup(ctx) }`；`input.client`
+  与 `hooks.*` 全部换成 V2 域：
+  - 工具：`ctx.tool.transform(e => e.add({ name, description, input: z.object(args), execute }))`，
+    `execute` 返回 `{ content }`，第二参是 `{ sessionID, agent, messageID, id, signal, progress }`
+  - 命令：`ctx.command.transform` 注册 `/dream`、`/memory`（V2 无 `template`，
+    补全列表读服务端 `command.list`，照常出现）
+  - 菜单与系统提示：`ctx.session.hook("context", ...)`（`system` / `messages` 可写，
+    `sessionID` / `agent` 只读），注入标记从 `synthetic: true` 挪到 `metadata`
+  - 事件：`ctx.event.subscribe()` 自己拉流（setup 返回 cleanup 中止）
+  - 编辑采集：`ctx.tool.hook("execute.before")`
+- **新增 `src/lib/v2-compat.ts`（薄兼容层）**：把 V2 `ctx` 包回 V1 形状的 `client`，
+  `src/lib/{capture,meta-llm,hooks,tools,store,menu,report,prompts}.ts` 一行未改，
+  既有 10 个单测原样通过：
+  - `session.messages` → `session.context`（`type`↔`role`、`content`↔`parts`，
+    保留 `state.status === "error"` 的工具失败判定；非 user/assistant 消息标 `summary` 跳过）
+  - `session.prompt({ noReply })` → `session.synthetic({ resume: false })`（只落可见消息、不唤醒模型）
+  - `session.create/delete` → `session.create/remove`
+  - V1 `{ providerID, modelID }` → V2 `ModelRef { providerID, id }`；V2 `session.prompt`
+    已无 `model` 字段，curator 隐藏会话的模型改在建会话时指定
+  - `time.created` 秒/毫秒容错（meta-llm 的轮询以 `Date.now()` 毫秒为基准）
+- **新增 `src/lib/v2-types.ts`**：手写窄类型 —— npm 上 `@opencode-ai/plugin@1.18.31→1.18.35`
+  只类型化 9 个域，2.0.24 运行时 `setup(ctx)` 实际注入 26 个（`session`/`tool`/`event`/
+  `permission` 均无类型），按 v2.0.24 源码逐字段标注出处。
+- **安装与配置口径变更（根因：两个插件在 2.x 上静默失效）**：
+  - 2.x 的 `plugin` 条目必须是**目录**，绝对**文件**路径会打
+    `configured plugin path must be a directory` 并被丢弃；裸包名会让每次启动
+    去 registry 跑 `npm install`（不可达时卡住会话启动）
+  - 目录解析用 `Bun.resolveSync("<dir>/server")` → `"<dir>/index"`，**不读
+    `package.json` 的 `main`** —— 仓库根新增 `index.js` 入口 shim
+  - `scripts/install.mjs` 改写**目录**条目、拷贝 shim、把旧的裸名/文件路径条目
+    原地升级，冒烟自检增加 `default.setup` 断言；内嵌 PowerShell / bash 同步
+- **已无 V1 `experimental.primary_tools` 等价物**（`options.pinned` 仅在 codemode
+  下生效），`dream_memory_search` 的常驻提示改为完全依赖菜单注入。
+- 测试 50 → 63：`test/entry.test.mjs` 重写为 fake-ctx 接线测试（注册了哪些工具/命令/
+  hook、工具返回 `{content}`、命令走 `synthetic({resume:false})`、context hook 注入菜单），
+  新增 `test/v2-compat.test.mjs` 覆盖上面每一条映射；`npm run typecheck` 与
+  `npm test` 均 exit 0。
+
 ## v0.4.5 — 2026-09
 
 **修复：桌面版（GUI）与无 cwd 场景下插件不注册**

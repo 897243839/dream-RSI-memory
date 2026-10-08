@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { PluginInput } from "@opencode-ai/plugin"
 import type { MemoryConfig } from "./types.js"
 import { stripJsonc } from "./utils.js"
 
@@ -110,8 +109,11 @@ function readJsonCandidates(candidates: string[]): Record<string, unknown> | nul
     return null
 }
 
-/** Resolution order: $OPENCODE_CONFIG_DIR → project root/.opencode → project root → ~/.config/opencode */
-export function resolveConfig(ctx?: PluginInput): MemoryConfig {
+/** Resolution order: $OPENCODE_CONFIG_DIR → project root/.opencode → project root → ~/.config/opencode
+ *
+ * V2: `ctx` 只需要项目目录（V1 的 `PluginInput.directory` → V2 的 `ctx.location.directory`）。
+ */
+export function resolveConfig(ctx?: { directory?: string }): MemoryConfig {
     const candidates: string[] = []
     const configDir = process.env.OPENCODE_CONFIG_DIR
     if (configDir) {

@@ -50,11 +50,13 @@ export class MetaLlm {
         try {
             const clientAny = this.client as {
                 session: {
-                    create(options: { body?: { title?: string }; query?: { directory?: string } }): Promise<{ data?: { id: string } }>
+                    create(options: { body?: { title?: string; model?: unknown }; query?: { directory?: string } }): Promise<{ data?: { id: string } }>
                 }
             }
+            // opencode 2.x 的 session.prompt 没有 model 字段，模型只能在建会话时确定
+            // （v2-compat 会把这里的 {providerID, modelID} 转成 ModelRef {providerID, id}）。
             const created = await clientAny.session.create({
-                body: { title: "dream-memory-mutate" },
+                body: { title: "dream-memory-mutate", model: this.modelField() },
                 query: { directory: this.directory },
             })
             return created?.data?.id ?? null
@@ -90,7 +92,7 @@ export class MetaLlm {
             await clientAny.session.prompt({
                 path: { id: sessionId },
                 body: {
-                    model: this.modelField(),
+                    // 模型已在 createTempSession 建会话时指定；V2 prompt 不接受 model。
                     parts: [{ type: "text", text: promptText, ignored: true }],
                 },
             })

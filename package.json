@@ -1,6 +1,6 @@
 {
     "name": "dream-rsi-memory",
-    "version": "0.4.7",
+    "version": "2.0.0",
     "type": "module",
     "description": "dream-RSI-memory — a self-evolving long-term memory plugin for opencode: an independent implementation of the Dream-RSI technique (arXiv:2609.14858). No affiliation with Google.",
     "main": "./dist/index.js",
@@ -10,6 +10,7 @@
         }
     },
     "files": [
+        "index.js",
         "dist"
     ],
     "scripts": {

@@ -28,7 +28,9 @@
  *      2. provisions ~/.cache/opencode/packages/dream-rsi-memory@latest/
  *         via a staging dir + `npm install --install-links` (real copies,
  *         no junctions) and swaps it in atomically
- *      3. adds `dream-rsi-memory` to the opencode config plugin array
+ *      3. adds the local package *directory* to the opencode config plugin array
+ *         (opencode 2.x drops absolute file targets: "configured plugin path
+ *         must be a directory")
  *
  *  offline (intranet / no npm next) — no network, npm, or Node build needed:
  *      + On the networked machine:  npm run vendor
@@ -63,6 +65,25 @@ const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"))
 const CACHE = join(homedir(), ".cache", "opencode", "packages")
 const SCOPE_DIR = join(CACHE, "dream-rsi-memory@latest")
 const NM_DM = join(SCOPE_DIR, "node_modules", "dream-rsi-memory")
+
+/**
+ * Plugin entry as an absolute **directory** path (forward slashes, JSON-string safe).
+ *
+ * opencode 2.x rejects absolute *file* targets: it logs
+ * "configured plugin path must be a directory" and drops the entry, so the plugin
+ * never loads (that is how both of this machine's plugins ended up silently dead).
+ * A directory is resolved by core's `r0({directory})`, which does
+ * `Bun.resolveSync("<dir>/server")` and then `Bun.resolveSync("<dir>/index")` —
+ * it never reads package.json "main". That is why the repo ships an `index.js`
+ * shim at the package root (copyPluginBody keeps it in sync).
+ *
+ * A bare package name (`dream-rsi-memory`) is worse still: it makes every opencode
+ * start run `npm install <name>`, which on a machine whose registry is unreachable
+ * fails with 404/ENOTFOUND and blocks session start for minutes.
+ */
+function pluginEntrySpec() {
+    return NM_DM.split("\\").join("/")
+}
 
 const VENDOR = join(REPO, "vendor")
 const VENDOR_DIST = join(VENDOR, "dist")
@@ -144,6 +165,8 @@ function buildDist() {
     const entry = join(REPO, "dist", "index.js")
     if (!existsSync(entry)) fail(`build finished but missing ${entry}`)
     if (!readFileSync(entry, "utf8").includes("dream-memory")) fail("dist/index.js does not look like the plugin (no magic string)")
+    // opencode 2.x resolves a plugin directory as `<dir>/index.*` (never package.json "main").
+    if (!existsSync(join(REPO, "index.js"))) fail(`missing ${join(REPO, "index.js")} (opencode 2.x needs <dir>/index.js)`)
     log(`dist ok (${pkg.version})`)
 }
 
@@ -175,12 +198,17 @@ function copyClosure(srcNmRoot, dstNmRoot, set, label) {
     log(`${label}: ${dstNmRoot} (${set.size} tops)`)
 }
 
-/** Real plugin body (package.json + dist/) mirroring the published layout. */
+/** Real plugin body (package.json + index.js shim + dist/) mirroring the published layout. */
 function copyPluginBody(dstNodeModulesRoot) {
     const dmDir = join(dstNodeModulesRoot, "dream-rsi-memory")
     rmSync(dmDir, { recursive: true, force: true })
     mkdirSync(dmDir, { recursive: true })
     cpSync(join(REPO, "package.json"), join(dmDir, "package.json"))
+    // opencode 2.x resolves a plugin directory via `<dir>/index.*`, not package.json
+    // "main" — without this shim the installed package would not load at all.
+    const shim = join(REPO, "index.js")
+    if (!existsSync(shim)) fail(`missing ${shim} (opencode 2.x needs <dir>/index.js)`)
+    cpSync(shim, join(dmDir, "index.js"))
     copyTree(join(REPO, "dist"), join(dmDir, "dist"), `plugin dist → ${join(dmDir, "dist")}`)
     return dmDir
 }
@@ -319,41 +347,55 @@ Get-ChildItem -Path $closureSrc -Directory | ForEach-Object {
 Write-Host "[2/3] copying plugin..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path $pluginDst -Force | Out-Null
 Copy-Item (Join-Path $pluginSrc "package.json") (Join-Path $pluginDst "package.json") -Force
+# opencode 2.x resolves a plugin directory via <dir>/index.js (never package.json main)
+if (Test-Path (Join-Path $pluginSrc "index.js")) { Copy-Item (Join-Path $pluginSrc "index.js") (Join-Path $pluginDst "index.js") -Force }
 Copy-Item (Join-Path $pluginSrc "dist") (Join-Path $pluginDst "dist") -Recurse -Force
 
 $wrapper = @{ name = "${PLUGIN_ID}-offline-installed"; version = "${ver}"; private = $true; dependencies = @{ "${PLUGIN_ID}" = "${ver}" } }
 [System.IO.File]::WriteAllText((Join-Path $target "package.json"), ($wrapper | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+
+# opencode 2.x rejects absolute file targets ("configured plugin path must be a
+# directory"), so the config entry is the package directory itself.
+$entry = $pluginDst
+$entrySpec = $entry -replace '\\\\','/'
 
 Write-Host "[3/3] enabling plugin in opencode config..." -ForegroundColor Yellow
 $configFile = Join-Path $configDir "opencode.json"
 if (-not (Test-Path $configFile)) { $configFile = Join-Path $configDir "opencode.jsonc" }
 if (Test-Path $configFile) {
     $raw = [System.IO.File]::ReadAllText($configFile)
-    if ($raw -match '"${PLUGIN_ID}"') {
+    $quotedEntry = '"' + $entrySpec + '"'
+    # Legacy forms: bare package name (V1) or absolute *file* path (invalid in 2.x).
+    $legacy = [regex]::Match($raw, '"[^"]*' + [regex]::Escape("${PLUGIN_ID}") + '[^"]*"')
+    if ($raw.Contains($quotedEntry)) {
         Write-Host "plugin already listed in $configFile"
-    } elseif ($raw -match '("plugin"\\s*:\\s*)\\[[\\s\\S]*?\\]') {
-        $raw = [regex]::Replace($raw, '("plugin"\\s*:\\s*)\\[[\\s\\S]*?\\]', {
-            param($m)
-            $inner = ($m.Groups[2].Value -replace ',\\s*$', '').Trim()
-            if ($inner.Length -eq 0) { return $m.Groups[1].Value + '["${PLUGIN_ID}"]' }
-            return $m.Groups[1].Value + '[$inner, "${PLUGIN_ID}"]'
-        })
+    } elseif ($legacy.Success) {
+        # opencode 2.x drops absolute file targets ("configured plugin path must be
+        # a directory") and re-fetches bare names from the npm registry on every
+        # start (404 / ENOTFOUND blocks session start). Upgrade to the directory.
+        $raw = $raw.Substring(0, $legacy.Index) + $quotedEntry + $raw.Substring($legacy.Index + $legacy.Length)
         [System.IO.File]::WriteAllText($configFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "added plugin in $configFile"
+        Write-Host "upgraded legacy plugin entry to local directory in $configFile"
+    } elseif ($raw -match '("plugins?"\\s*:\\s*)\\[[\\s\\S]*?\\]') {
+        $m2 = [regex]::Match($raw, '("plugins?"\\s*:\\s*)\\[[\\s\\S]*?\\]')
+        $inner = ($m2.Groups[2].Value -replace ',\\s*$','').Trim()
+        if ($inner.Length -eq 0) { $arr = '["' + $entrySpec + '"]' } else { $arr = '[' + $inner + ', "' + $entrySpec + '"]' }
+        $raw = $raw.Substring(0, $m2.Index) + $m2.Groups[1].Value + $arr + $raw.Substring($m2.Index + $m2.Length)
+        [System.IO.File]::WriteAllText($configFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "added local plugin entry in $configFile"
     } else {
         $idx = $raw.IndexOf('{')
-        $raw = $raw.Substring(0, $idx + 1) + "\`n  \`"plugin\`": [\`"${PLUGIN_ID}\`"]," + $raw.Substring($idx + 1)
+        $raw = $raw.Substring(0, $idx + 1) + "\`n  \`"plugins\`": [\`"$entrySpec\`"]," + $raw.Substring($idx + 1)
         [System.IO.File]::WriteAllText($configFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "added plugin in $configFile"
+        Write-Host "added local plugin entry in $configFile"
     }
 } else {
-    @{ '$schema' = 'https://opencode.ai/config.json'; plugin = @("${PLUGIN_ID}") } |
+    @{ '$schema' = 'https://opencode.ai/config.json'; plugins = @($entrySpec) } |
         ConvertTo-Json -Depth 5 | Set-Content (Join-Path $configDir "opencode.json") -Encoding UTF8
     $configFile = Join-Path $configDir "opencode.json"
     Write-Host "created $configFile with plugin enabled"
 }
 
-$entry = Join-Path $pluginDst "dist\\index.js"
 if (Test-Path $entry) {
     Write-Host "" -ForegroundColor Cyan
     Write-Host "=== INSTALL SUCCESS ===" -ForegroundColor Green
@@ -413,6 +455,8 @@ done
 echo "[2/3] copying plugin..."
 mkdir -p "$PLUGIN_DST"
 cp "$PLUGIN_SRC/package.json" "$PLUGIN_DST/package.json"
+# opencode 2.x resolves a plugin directory via <dir>/index.js (never package.json main)
+if [ -f "$PLUGIN_SRC/index.js" ]; then cp "$PLUGIN_SRC/index.js" "$PLUGIN_DST/index.js"; fi
 cp -a "$PLUGIN_SRC/dist" "$PLUGIN_DST/dist"
 
 printf '%s\\n' '{"name":"${PLUGIN_ID}-offline-installed","version":"${ver}","private":true,"dependencies":{"${PLUGIN_ID}":"${ver}"}}' > "$TARGET/package.json"
@@ -420,24 +464,31 @@ printf '%s\\n' '{"name":"${PLUGIN_ID}-offline-installed","version":"${ver}","pri
 echo "[3/3] enabling plugin in opencode config..."
 CONFIG="$CONFIG_DIR/opencode.json"
 test -f "$CONFIG" || CONFIG="$CONFIG_DIR/opencode.jsonc"
+ENTRY_SPEC="$PLUGIN_DST"
 node -e '
 const fs = require("fs");
 const path = process.argv[1];
+const entry = process.argv[2];
 try { var cfg = JSON.parse(fs.readFileSync(path, "utf8")); } catch (e) { var cfg = {}; }
-const list = Array.isArray(cfg.plugin) ? cfg.plugin.filter(Boolean) : [];
-if (!list.includes("${PLUGIN_ID}")) { list.push("${PLUGIN_ID}"); }
-cfg.plugin = list;
+const list = (Array.isArray(cfg.plugins) ? cfg.plugins : Array.isArray(cfg.plugin) ? cfg.plugin : []).filter(Boolean);
+// opencode 2.x drops absolute file targets ("configured plugin path must be a
+// directory") and re-fetches bare names from the npm registry on every start.
+// Write the local directory and upgrade any legacy entry (bare name or file path).
+const at = list.findIndex((x) => typeof x === "string" && x.includes("dream-rsi-memory"));
+if (at >= 0) list[at] = entry; else list.push(entry);
+delete cfg.plugin;
+cfg.plugins = list;
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2));
-' "$CONFIG"
+' "$CONFIG" "$ENTRY_SPEC"
 
-if [ -f "$PLUGIN_DST/dist/index.js" ]; then
+if [ -f "$PLUGIN_DST/index.js" ]; then
     echo ""
     echo "=== INSTALL SUCCESS ==="
     echo "Plugin location: $TARGET"
     echo "Config updated : $CONFIG"
     echo "Restart opencode (or open a fresh session) to load v${ver}."
 else
-    echo "[FAIL] plugin entry missing"
+    echo "[FAIL] plugin entry missing ($PLUGIN_DST/index.js)"
     exit 1
 fi
 `
@@ -583,39 +634,62 @@ function configPath(custom) {
     return json
 }
 
-/** Remove `dream-rsi-memory` from the plugin array of a config file. */
+/**
+ * Any config value that names this plugin: the bare package name (V1 style), an
+ * absolute *file* path (the invalid 2.0 first attempt) or the directory entry that
+ * opencode 2.x actually accepts. All three must be recognisable so a stale form is
+ * upgraded instead of staying silently dead.
+ */
+const PLUGIN_ENTRY_RE = /"[^"]*dream-rsi-memory[^"]*"/
+
+/** Remove every dream-rsi-memory plugin entry (bare name / file path / directory). */
 function removeConfigPlugin(file) {
-    const appName = "dream-rsi-memory"
     const raw = readFileSync(file, "utf8")
-    if (!/"dream-rsi-memory"/.test(raw)) {
+    if (!PLUGIN_ENTRY_RE.test(raw)) {
         log(`plugin not listed in ${file}`)
         return
     }
-    // replace the exact quoted entry (with optional surrounding comma/space/newline)
-    const next = raw.replace(/[ \t]*"dream-rsi-memory",?[ \t]*\r?\n?/, "")
+    // drop the whole array element (entry + optional comma/space/newline)
+    const next = raw.replace(/[ \t]*"[^"]*dream-rsi-memory[^"]*",?[ \t]*\r?\n?/g, "")
     writeFileSync(file, next, "utf8")
-    log(`removed "${appName}" from ${file}`)
+    log(`removed dream-rsi-memory plugin entries from ${file}`)
 }
 
-/** Append `dream-rsi-memory` into the plugin array of a json/jsonc config. */
+/**
+ * Insert the local **directory** plugin entry into a json/jsonc config.
+ * A legacy entry found in place (bare name or absolute file path) is upgraded:
+ * opencode 2.x drops file targets ("configured plugin path must be a directory")
+ * and re-fetches bare names from the npm registry on every start, which blocks
+ * session start when the registry is unreachable.
+ */
 function ensureConfigPlugin(file) {
-    const appName = "dream-rsi-memory"
+    const entry = pluginEntrySpec()
+    const quoted = JSON.stringify(entry)
     const raw = readFileSync(file, "utf8")
-    if (/"dream-rsi-memory"/.test(raw)) {
+    if (raw.includes(quoted)) {
         log(`plugin already listed in ${file}`)
         return
     }
-    const m = raw.match(/(\s*"plugin"\s*:\s*)\[([\s\S]*?)\]/)
+    const legacy = PLUGIN_ENTRY_RE.exec(raw)
+    if (legacy) {
+        const next = raw.slice(0, legacy.index) + quoted + raw.slice(legacy.index + legacy[0].length)
+        writeFileSync(file, next, "utf8")
+        log(`upgraded plugin entry to local directory in ${file}`)
+        return
+    }
+    const m = raw.match(/(\s*"plugins?"\s*:\s*)\[([\s\S]*?)\]/)
     if (m) {
         const prefix = m[1]
         const inner = m[2].trim()
-        const newInner = inner.length === 0 ? `"${appName}"` : `${inner.replace(/,\s*$/, "")}, "${appName}"`
+        const newInner = inner.length === 0 ? quoted : `${inner.replace(/,\s*$/, "")}, ${quoted}`
         const next = raw.slice(0, m.index) + `${prefix}[${newInner}]` + raw.slice(m.index + m[0].length)
         writeFileSync(file, next, "utf8")
-        log(`added "${appName}" to plugin list in ${file}`)
+        log(`added local plugin entry to ${prefix.trim()} list in ${file}`)
         return
     }
-    // No plugin array: insert a top-level `plugin` key after the opening brace.
+    // No plugin array: insert a top-level V2 `plugins` key after the opening brace.
+    // (opencode 2.0.24 accepts both `plugin` and `plugins`; `plugins` is the
+    // documented V2 key, so a brand-new config gets the modern spelling.)
     let depth = 0
     let inString = false
     let esc = false
@@ -635,18 +709,19 @@ function ensureConfigPlugin(file) {
     }
     if (braceAt < 0) fail(`cannot insert plugin key into ${file}: no top-level object found`)
     const indent = "  "
-    const insertion = `\n${indent}"plugin": ["${appName}"],`
+    const insertion = `\n${indent}"plugins": [${quoted}],`
     const next = raw.slice(0, braceAt + 1) + insertion + raw.slice(braceAt + 1)
     writeFileSync(file, next, "utf8")
-    log(`added "${appName}" to plugin list in ${file}`)
+    log(`added local plugin entry to plugin list in ${file}`)
 }
 
 /* ------------------------------------------------------------------ verify */
 function verifyInstall() {
-    const entry = `file:///${join(NM_DM, "dist", "index.js").split("\\").join("/")}`
+    const entry = `file:///${join(NM_DM, "index.js").split("\\").join("/")}`
     const script = `import(${JSON.stringify(entry)}).then((m) => {
         console.log("default id:", m.default && m.default.id, "| named exports:", Object.keys(m).length)
         if (!m.default || m.default.id !== "dream-memory") { console.error("unexpected plugin default export"); process.exit(2) }
+        if (typeof m.default.setup !== "function") { console.error("V2 plugin must export setup()"); process.exit(3) }
         console.log("smoke ok")
     }).catch((e) => { console.error(e); process.exit(1) })`
     const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: SCOPE_DIR, stdio: "inherit" })
