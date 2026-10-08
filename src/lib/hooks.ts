@@ -1,12 +1,13 @@
 import type { Part, UserMessage } from "@opencode-ai/sdk"
 import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
-import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE } from "./dream-nudge.js"
+import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE, DREAM_NUDGE_TRIAL } from "./dream-nudge.js"
 import type { Logger } from "./logger.js"
 import type { GateRegistry } from "./menu.js"
 import type { MetaLlm } from "./meta-llm.js"
 import { renderMenuText } from "./prompts.js"
 import { dreamHelpText, nodeDetailText, policyListText, replayOptsOf, statusText } from "./report.js"
+import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
 import type { MemoryConfig, Outcome } from "./types.js"
 import { normalizeFiles, truncate } from "./utils.js"
@@ -72,7 +73,7 @@ function teaserFor(store: MemoryStore, queryText: string, files: string[], sessi
     const query = queryText.trim()
     if (!query || store.count() === 0) return ""
     const hit = store
-        .search(query, files, { limit: 5 })
+        .search(query, files, { limit: 5, log: { trigger: "teaser" } })
         .find((h) => h.node.sessionId !== sessionID)
     if (!hit) return ""
     const tag = hit.node.outcome === "failed" ? "（踩坑）" : hit.node.outcome === "success" ? "（成功）" : ""
@@ -99,6 +100,7 @@ export function createMessagesTransformHandler(
 
         const stats = store.menuStats(replayOptsOf(config))
         if (!gate.shouldInject(sessionID, stats.nodeCount, config.menu)) return
+        const stage = getStage(stats.nodeCount, config.dream)
 
         const lastMessage = messages[idx]
         const queryText = (lastMessage.parts ?? [])
@@ -123,6 +125,8 @@ export function createMessagesTransformHandler(
             nodeCount: stats.nodeCount,
             policyId: stats.policyId,
             replayTrain: stats.replayTrain,
+            stage,
+            minNodesProvisional: config.dream.minNodesProvisional,
             minNodes: config.dream.minNodes,
             maxTokensHint: config.menu.maxTokensHint,
             teaser,
@@ -141,21 +145,27 @@ export function createMessagesTransformHandler(
         messages[idx].parts.push(part)
         gate.markInjected(sessionID, stats.nodeCount)
 
-        // Dream nudge: inject when conditions are met
-        const ready = stats.nodeCount >= config.dream.minNodes
-        const stale = ready && (turnsSinceDream ?? 0) >= 10
-        if (ready) {
-            let nudge = DREAM_NUDGE_NODE_THRESHOLD
-            if (stale) nudge = DREAM_NUDGE_STALE
-            const nudgePart: Part = {
-                id: "dream-nudge-" + Date.now().toString(36),
-                sessionID,
-                messageID: userInfo.id,
-                type: "text",
-                text: nudge,
-                synthetic: true,
+        // Dream nudge（P0 三阶段）：F 期催进化；M 期另注入低频试调提示；
+        // S 期不注入催促；dream.enabled=false 全部不注入（与菜单同一 GateRegistry 节流）。
+        if (config.dream.enabled) {
+            let nudge = ""
+            if (stage === "F") {
+                const stale = (turnsSinceDream ?? 0) >= 10
+                nudge = stale ? DREAM_NUDGE_STALE : DREAM_NUDGE_NODE_THRESHOLD
+            } else if (stage === "M") {
+                nudge = DREAM_NUDGE_TRIAL
             }
-            messages[idx].parts.push(nudgePart)
+            if (nudge) {
+                const nudgePart: Part = {
+                    id: "dream-nudge-" + Date.now().toString(36),
+                    sessionID,
+                    messageID: userInfo.id,
+                    type: "text",
+                    text: nudge,
+                    synthetic: true,
+                }
+                messages[idx].parts.push(nudgePart)
+            }
         }
     }
 }
@@ -216,7 +226,7 @@ function searchCommandText(store: MemoryStore, argTokens: string[]): string {
     const query = argTokens.join(" ")
     const policy = store.activePolicy()
     const limit = Math.min(policy.params.maxRecall, 10)
-    const hits = store.search(query, [], { limit })
+    const hits = store.search(query, [], { limit, log: { trigger: "command" } })
     const lines = [`[dream-rsi-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
     for (const hit of hits) {
         lines.push(

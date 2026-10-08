@@ -34,9 +34,27 @@ test("default capture/curator values apply without config", () => {
     withConfigDir(() => {
         const cfg = resolveConfig()
         assert.equal(cfg.capture.maxMaterialChars, 6000)
-        assert.equal(cfg.curator.enabled, false)
+        // v2.1.0（P1）：curator LLM 候选生成默认开，默认用 opencode 免费模型
+        assert.equal(cfg.curator.enabled, true)
+        assert.equal(cfg.curator.providerID, "opencode")
+        assert.equal(cfg.curator.modelID, "mimo-v2.6-flash-free")
         assert.equal(cfg.curator.timeoutMs, 120000)
         assert.equal("distill" in cfg, false)
+    })
+})
+
+test("v2.1.0 dream 三阶段/queryLog 默认值", () => {
+    withConfigDir(() => {
+        const cfg = resolveConfig()
+        assert.equal(cfg.dream.enabled, true)
+        assert.equal(cfg.dream.minNodesProvisional, 5)
+        assert.equal(cfg.dream.minNodes, 20)
+        assert.equal(cfg.dream.minValidNodes, 3)
+        assert.equal(cfg.dream.seedCount, 5)
+        assert.equal(cfg.dream.seed, undefined)
+        assert.equal(cfg.dream.queryWindowTurns, 50)
+        assert.equal(cfg.dream.replayMinRealQueries, 10)
+        assert.equal(cfg.queryLogMax, 1000)
     })
 })
 

@@ -1,10 +1,18 @@
 import { runReplay } from "./replay.js"
+import { getStage, stageName } from "./stages.js"
 import type { MemoryStore } from "./store.js"
 import type { MemoryConfig } from "./types.js"
 import { truncate } from "./utils.js"
 
-export function replayOptsOf(config: MemoryConfig): { trainRatio: number; weights: MemoryConfig["replayWeights"] } {
-    return { trainRatio: config.dream.trainRatio, weights: config.replayWeights }
+export function replayOptsOf(config: MemoryConfig): { trainRatio: number; weights: MemoryConfig["replayWeights"]; queryLog: { windowTurns: number; minRealQueries: number } } {
+    return {
+        trainRatio: config.dream.trainRatio,
+        weights: config.replayWeights,
+        queryLog: {
+            windowTurns: config.dream.queryWindowTurns,
+            minRealQueries: config.dream.replayMinRealQueries,
+        },
+    }
 }
 
 export function nodeStatsText(store: MemoryStore): string {
@@ -21,13 +29,21 @@ export function statusText(store: MemoryStore, config: MemoryConfig): string {
     const autoCount = store
         .sortedNodes()
         .reduce((sum, n) => (n.autoCreated ? sum + 1 : sum), 0)
+    const stage = getStage(store.count(), config.dream)
     const lines = [
         "[dream-rsi-memory] 项目记忆库",
         `  ${nodeStatsText(store)}${autoCount ? `（其中 idle 自动采集 ${autoCount} 个）` : ""}`,
-        `  当前策略：${active.policyId}`,
+        `  阶段：${stageName(stage)}（${stage}）` +
+            (stage === "S"
+                ? `n < ${config.dream.minNodesProvisional}，信号采集中`
+                : stage === "M"
+                    ? `${config.dream.minNodesProvisional} ≤ n < ${config.dream.minNodes}，dream 可试调`
+                    : `n ≥ ${config.dream.minNodes}，正式期`),
+        `  当前策略：${active.policyId}${active.provisional ? "（provisional 试用中）" : ""}`,
         `  params：${JSON.stringify(active.params)}`,
         `  replay：train=${report.train.totalScore.toFixed(3)}` +
             (report.valid ? ` valid=${report.valid.totalScore.toFixed(3)}` : "") +
+            (report.realCases ? `（含真实查询 ${report.realCases} 例）` : "") +
             (report.n === 0 ? "（暂无节点）" : "（4 指标：fileHitRate+failureAvoidRate+precision+recallBudget）"),
     ]
     const warn = store.watchdogNotice(active.policyId, report.train.totalScore, 2 * config.dream.epsilon)
@@ -38,6 +54,13 @@ export function statusText(store: MemoryStore, config: MemoryConfig): string {
             `  最近做梦：${latest.runId} ${latest.status}` +
                 (latest.chosenPolicyId ? " → " + latest.chosenPolicyId : "") +
                 (latest.notes ? " · " + latest.notes : ""),
+        )
+    }
+    // P2 在线战绩（仅展示，不自动调参；P3a 第二期再接回路）
+    for (const p of store.listPolicies()) {
+        const s = store.onlineStats(p.policyId)
+        lines.push(
+            `  在线战绩 ${p.policyId}：服务查询 ${s.served}，其下节点 成功 ${s.success} / 失败 ${s.failed} / 部分 ${s.partial}`,
         )
     }
     return lines.join("\n")

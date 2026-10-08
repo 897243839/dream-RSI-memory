@@ -61,6 +61,12 @@ export interface PolicyRecord {
     createdAt: string
     /** Replay scores measured at policy-creation time (watchdog baseline). */
     replayAtCreation?: { train: number; valid: number | null }
+    /** Provenance: "default" = p-default, "seed" = 建库时的播种候选（P1）。 */
+    source?: "default" | "seed"
+    /** 播种时使用的 RNG 种子（可复现性记录）。 */
+    seed?: number
+    /** 试用期（M）切换出的策略标记，正式期（F）守擂/切换后清除。 */
+    provisional?: boolean
 }
 
 export type DreamStatus = "queued" | "running" | "done" | "failed"
@@ -110,6 +116,8 @@ export interface ReplayReport {
     valid: ReplayMetrics | null
     n: number
     splitIndex: number
+    /** 本次回放实际并入 train 的真实查询用例数（不足阈值时为 0）。 */
+    realCases: number
 }
 
 export interface CaptureMaterial {
@@ -141,11 +149,26 @@ export interface MemoryConfig {
     }
     dream: {
         enabled: boolean
+        /** N1：S 播种期上限（n < 此值不评估不切换，只写证据不足记录）。 */
+        minNodesProvisional: number
+        /** N2：F 正式期起点（M 试用期 = [minNodesProvisional, minNodes)）。 */
         minNodes: number
+        /** M 期 valid 样本数低于此值时改走「只过 train 且 ε 加倍」的放宽门槛。 */
+        minValidNodes: number
         trainRatio: number
         epsilon: number
         candidateCount: number
+        /** 建库时播种的候选策略组数（p-default 之外）。 */
+        seedCount: number
+        /** 播种/启发式微扰的固定种子（测试可复现用；缺省 = fnv1a(projectId+createdAt)）。 */
+        seed?: number
+        /** 真实查询回放：标签窗口（turnIndex 区间长度）。 */
+        queryWindowTurns: number
+        /** 真实查询回放：真实用例数低于此值时不加真实用例（等于现状）。 */
+        replayMinRealQueries: number
     }
+    /** querylog.jsonl 的行数上限（append 后超限裁最旧）。 */
+    queryLogMax: number
     replayWeights: {
         fileHitRate: number
         failureAvoidRate: number
@@ -161,4 +184,9 @@ export interface MemoryConfig {
 export interface ReplayOptions {
     trainRatio: number
     weights: MemoryConfig["replayWeights"]
+    /** 真实查询回放（P2）：缺省 = 纯合成用例（旧行为不变）。 */
+    queryLog?: {
+        windowTurns: number
+        minRealQueries: number
+    }
 }

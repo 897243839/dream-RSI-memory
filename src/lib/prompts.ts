@@ -31,6 +31,9 @@ export interface MenuRenderInput {
     nodeCount: number
     policyId: string
     replayTrain?: number
+    /** 三阶段（P0）：S 播种期 / M 试用期 / F 正式期。 */
+    stage: "S" | "M" | "F"
+    minNodesProvisional: number
     minNodes: number
     maxTokensHint: number
     teaser?: string
@@ -40,19 +43,20 @@ export interface MenuRenderInput {
 
 /**
  * 回合菜单文本。有真实检索命中时附带 teaser（诱导模型自主调用——这是关键触发链），
- * 无命中时退出为空串（不刷屏）。
+ * 无命中时退出为空串（不刷屏）。v2.1.0：sizeLine 按 S/M/F 三阶段三选一。
  */
 export function renderMenuText(input: MenuRenderInput): string {
-    const { nodeCount, policyId, minNodes, maxTokensHint, teaser, turnsSinceDream, lastDreamAt } = input
-    const replayTrain = input.replayTrain ?? 0
-    const ready = nodeCount >= minNodes
-    const stale = ready && (turnsSinceDream ?? 0) >= 10
+    const { nodeCount, policyId, stage, minNodesProvisional, minNodes, maxTokensHint, teaser, turnsSinceDream, lastDreamAt } = input
+    const stale = stage === "F" && (turnsSinceDream ?? 0) >= 10
 
-    const sizeLine = !ready
-        ? `记忆库当前 ${nodeCount} 条（<${minNodes}），尚未到自动进化阈值`
-        : stale
-            ? `记忆库 ${nodeCount} 条，策略 ${policyId}，**应**执行 dream_rsi_memory_dream 进化（距上次已 ${turnsSinceDream} 节点）`
-            : `记忆库 ${nodeCount} 条，策略 ${policyId}，可 dream_rsi_memory_dream 自我进化`
+    const sizeLine =
+        stage === "S"
+            ? `记忆库当前 ${nodeCount} 条（<${minNodesProvisional}），信号采集中，暂不可调参`
+            : stage === "M"
+                ? `记忆库当前 ${nodeCount} 条，试用期（${minNodesProvisional}≤n<${minNodes}），dream 可试调（放宽门槛）`
+                : stale
+                    ? `记忆库 ${nodeCount} 条，策略 ${policyId}，**应**执行 dream_rsi_memory_dream 进化（距上次已 ${turnsSinceDream} 节点）`
+                    : `记忆库 ${nodeCount} 条，策略 ${policyId}，可 dream_rsi_memory_dream 自我进化`
     const dreamTimeLine = lastDreamAt ? `上次进化：${lastDreamAt}` : ""
     const teaserLine = teaser ? `命中历史：${teaser}` : ""
     return [

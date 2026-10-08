@@ -54,7 +54,9 @@ const DEFAULTS: MemoryConfig = {
         maxMaterialChars: 6000,
     },
     curator: {
-        enabled: false,
+        enabled: true,
+        providerID: "opencode",
+        modelID: "mimo-v2.6-flash-free",
         timeoutMs: 120_000,
     },
     menu: {
@@ -65,11 +67,17 @@ const DEFAULTS: MemoryConfig = {
     },
     dream: {
         enabled: true,
+        minNodesProvisional: 5,
         minNodes: 20,
+        minValidNodes: 3,
         trainRatio: 0.8,
         epsilon: 0.005,
         candidateCount: 3,
+        seedCount: 5,
+        queryWindowTurns: 50,
+        replayMinRealQueries: 10,
     },
+    queryLogMax: 1000,
     replayWeights: {
         fileHitRate: 0.35,
         failureAvoidRate: 0.25,

@@ -4,6 +4,7 @@ import { runDream } from "./dream.js"
 import type { Logger } from "./logger.js"
 import type { MetaLlm } from "./meta-llm.js"
 import { nodeDetailText, replayOptsOf, statusText } from "./report.js"
+import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
 import type { CommitInput, Outcome } from "./types.js"
 import { normalizeFiles, truncate } from "./utils.js"
@@ -100,7 +101,7 @@ export function createTools(deps: {
             const policy = store.activePolicy()
             const requested = args.limit ?? policy.params.maxRecall
             const limit = Math.min(Math.max(Math.round(requested), 1), 10)
-            const hits = store.search(args.query, files, { limit })
+            const hits = store.search(args.query, files, { limit, log: { trigger: "tool" } })
 
             const lines = [`[dream-rsi-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
             for (const hit of hits) {
@@ -121,10 +122,20 @@ export function createTools(deps: {
                 lines.push("  无结果。可先 dream_rsi_memory_commit 记录当前局面，或换关键词/加文件路径重试。")
             } else {
                 const topScore = hits[0].score
+                // P0：S 播种期（n<5）劝 search/commit，避免撞 S 期"证据不足"返回；
+                // dream.enabled=false 同样不劝 dream；M/F 期照常劝 dream。
+                const stage = getStage(store.count(), config.dream)
+                const dreamSuggestable = config.dream.enabled && stage !== "S"
+                const low = dreamSuggestable
+                    ? `建议 dream_rsi_memory_dream 进化策略`
+                    : `建议 dream_rsi_memory_commit 沉淀当前局面，或 dream_rsi_memory_search 换关键词重试`
+                const medium = dreamSuggestable
+                    ? `可 dream_rsi_memory_dream 优化策略`
+                    : `可 dream_rsi_memory_commit 记录当前局面，或 dream_rsi_memory_search 加文件路径重试`
                 if (topScore < 0.15) {
-                    lines.push(`\n  ⚠ 检索质量低（top=${topScore.toFixed(3)}），建议 dream_rsi_memory_dream 进化策略`)
+                    lines.push(`\n  ⚠ 检索质量低（top=${topScore.toFixed(3)}），${low}`)
                 } else if (topScore < 0.3) {
-                    lines.push(`\n  检索质量一般（top=${topScore.toFixed(3)}），可 dream_rsi_memory_dream 优化策略`)
+                    lines.push(`\n  检索质量一般（top=${topScore.toFixed(3)}），${medium}`)
                 }
             }
             return lines.join("\n")

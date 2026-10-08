@@ -22,8 +22,17 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
    时衰半衰期 / 召回上限 / 最低分数）决定候选如何排序；失败节点天然高价值。
 3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
    （文件命中率 / 失败规避率 / 精确率 / 召回预算）的加权总分，只有稳健提升
-   （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。
-4. **进化**：后台「馆藏管理员」LLM（可选）作为策略变异的启发式来源。
+   （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。门槛分**三阶段**：
+   - **S 播种期**（n < 5）：不评估不切换，写一条"证据不足"的运行记录（信号采集中）；
+   - **M 试用期**（5 ≤ n < 20）：正常评估，valid 样本不足时放宽门槛（只过 train 且
+     ε 加倍），切换出的策略带 `provisional` 标记；
+   - **F 正式期**（n ≥ 20）：双门槛不变；dream 后 provisional 策略要么交接、要么转正。
+4. **进化**：候选池 = π₀ 保底（当前策略）+ 建库播种的 `seedCount` 组参数 +
+   启发式变体（每次运行叠加随机微扰）+ 后台「馆藏管理员」LLM（**默认开**，
+   失败自动降级只损失本次候选）。
+5. **真实查询回放**：工具/命令/teaser 三个检索出口落盘 `querylog.jsonl`，replay
+   在真实用例足够（≥ `replayMinRealQueries`）时把它们并入 train 指标；每个策略的
+   在线战绩（服务查询数 / 节点成败计数）在 `dream_rsi_memory_status` 末尾展示。
 
 ## 安装
 
@@ -129,6 +138,7 @@ npm run install:opencode                                  # 同上 dev 安装
 ```
 <projectId>/
 ├─ index.json                  # 小型索引：项目元信息 + 检索策略 + 做梦记录
+├─ querylog.jsonl              # 用户面检索日志（v2.1.0：真实查询回放的数据源）
 └─ sessions/<会话>.json         # 按会话拆分：每个会话一个文件，仅含该会话的记忆节点
 ```
 
@@ -149,9 +159,9 @@ npm run install:opencode                                  # 同上 dev 安装
 | `dream_rsi_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
 | `dream_rsi_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
 | `dream_rsi_memory_node` | 查看节点详情 |
-| `dream_rsi_memory_status` | 记忆库状态 + replay 指标 |
+| `dream_rsi_memory_status` | 记忆库状态 + 阶段 + replay 指标 + 每策略在线战绩 |
 | `dream_rsi_memory_policy` | 手动切换检索策略 |
-| `dream_rsi_memory_dream` | 触发一次「做梦」优化策略 |
+| `dream_rsi_memory_dream` | 触发一次「做梦」优化策略（S 期返回证据不足，M 期放宽门槛试调） |
 
 回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
 （冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction
@@ -187,12 +197,19 @@ npm run install:opencode                                  # 同上 dev 安装
         "maxTokensHint": 200
     },
     "dream": {
-        "enabled": true,
-        "minNodes": 20,          // 节点数不足时拒绝做梦
+        "enabled": true,         // false 时 dream 工具/命令返回"已禁用"、nudge 不注入
+        "minNodesProvisional": 5, // N1：S 播种期上限（n<5 不评估不切换，只写证据不足记录）
+        "minNodes": 20,          // N2：F 正式期起点（M 试用期 = 5≤n<20，放宽门槛可试调）
+        "minValidNodes": 3,      // M 期 valid 样本低于此值时改走"只过 train 且 ε 加倍"
         "trainRatio": 0.8,       // holdout 切分比例
-        "epsilon": 0.005,        // 不退化保证：valid 需 ≥ 基线 + ε
-        "candidateCount": 3
+        "epsilon": 0.005,        // 不退化保证：valid 需 ≥ 基线 + ε（M 期放宽时 ε 加倍）
+        "candidateCount": 3,     // 启发式候选组数（每次运行再叠加 seeded ±20% 微扰）
+        "seedCount": 5,          // 建库播种的候选策略组数（p-default 之外）
+        "seed": null,            // 可选：播种/微扰固定种子（缺省 = fnv1a(projectId+createdAt)）
+        "queryWindowTurns": 50,  // 真实查询回放的标签窗口
+        "replayMinRealQueries": 10 // 真实用例低于此数不并入 replay（回退现状）
     },
+    "queryLogMax": 1000,         // querylog.jsonl 行数上限（超限裁最旧）
     "replayWeights": {
         "fileHitRate": 0.35,
         "failureAvoidRate": 0.25,
@@ -203,11 +220,12 @@ npm run install:opencode                                  # 同上 dev 安装
     "capture": {
         "maxMaterialChars": 6000
     },
-    // 后台「馆藏管理员」LLM（可选，默认关闭；用于 dreaming 参数突变）
+    // 后台「馆藏管理员」LLM（v2.1.0 起**默认开**；用于 dreaming 参数突变）
+    // LLM 失败/超时优雅降级：只损失本次候选，dream 照常完成
     "curator": {
-        "enabled": false,
-        "providerID": "anthropic",
-        "modelID": "claude-sonnet-4-20250514",
+        "enabled": true,
+        "providerID": "opencode",
+        "modelID": "mimo-v2.6-flash-free",
         "timeoutMs": 120000
     }
 }
