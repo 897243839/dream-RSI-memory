@@ -4,6 +4,8 @@
 > 参照系：billion-context 在本机（opencode 桌面 2.0.26）的实际用法。
 > 本文只出方案，不动代码（用户 m01161「先给方案再动手」；m01173 追加 1.x 对齐与 CLI 设计）。
 > 工程根：`D:\Downloads\dream-RSI-memory-2.0.0`（单层，含 `src/` `scripts/` `docs/` `test/` `index.js` `package.json` `tsconfig.json`）。
+> **执行状态（v2.1.0 合并后）**：方案 Phase 0–5 已全部落地并随 `merge` 提交合入 `master`。
+> **命名更正**：本文早期章节写的「插件 id 仍 `dream-memory`、数据目录仍 `…/plugin/dream-memory/`」已被发布口径推翻——v2.1.0 合并采纳远端 v2.0.1 更名，**id / 工具名 / 输出前缀 / 配置文件 / 数据目录统一为 `dream-rsi-memory`（`dream_rsi_memory_*`）**，旧名自动迁移（见 `CHANGELOG.md` v2.0.1 条目）；以 CHANGELOG 为准。
 
 ---
 

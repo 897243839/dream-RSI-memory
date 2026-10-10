@@ -49,10 +49,28 @@
     success/failed/partial = `policyVersion === policyId` 的节点 outcome 计数；
     `dream_rsi_memory_status` 输出末尾附每策略一行在线战绩。**本版只聚合展示，
     不做任何自动调参（P3a 属第二期）**。
+- **opencode 2.x 集成第二期：安装布局 + CLI + 双入口**：
+  - 安装布局：**scope 根即插件目录**——`~/.cache/opencode/packages/dream-rsi-memory@latest/`
+    顶层就是 `index.js` + `package.json` + `dist/`，`node_modules/`（`@opencode-ai/plugin` +
+    `zod` 闭包）随载荷自带，不再嵌套 `node_modules/dream-rsi-memory` 层（`scripts/install.mjs` 重写）。
+  - 配置编辑 JSONC 感知：`plugins`/`plugin` 数组**元素级**定位与升级（整文件正则替换废除），
+    注释透明的深度扫描（元素含 `]`、行/块注释不再截断或劈开元素），写盘前一律 `JSON.parse`
+    校验，空配置插入不产生尾逗号；带 BOM 的配置文件不再解析炸掉（原字节保留写回）。
+  - 安装健壮性：swap 后**先断言 + 冒烟再删备份**（坏 payload 不架空可用安装）；uninstall
+    先删目录（被进程占用时提示退出 opencode 后重跑、**配置不动**）再删配置；原地升级
+    `mergeTree` keep 集合大小写感知（Windows）+ 逐文件复制失败汇总告警。
+  - 新 CLI：`dreamrsimem`（bin → `dist/cli.js`）——默认 `doctor`，`plugin install|remove|status`、
+    `memory list|export`、`--version/--help`；只读诊断库 `src/lib/opencode-install.ts`，
+    安装/卸载委托 `scripts/install.mjs`（透传退出码）。
+  - 双入口：默认导出 `{ id, setup, server }`——V2 `setup(ctx)` 与 V1 `server` hooks 共用
+    同一 runtime / 数据目录；`package.json` exports 补 `./server`；新增 `src/lib/v1-host.ts`
+    （opencode 1.x CLI 宿主：6 工具复用、命令走**非空模板**、`server` 即 V1 Plugin）。
 - 测试 67 → 81：新增 S 期 insufficient 记录、M 期放宽门槛+provisional、F 期转正、
   播种可复现、queryLog 写入/裁剪、replay 真实用例回退与并入、curator 关闭/失败降级、
   `dream.enabled:false` 全禁用、三阶段 nudge 注入等用例；
   `test/config.test.mjs` 断言 curator 默认值按新默认更新（旧行为断言过期）。
+- 第二期再加至 93：双入口导出、V1 宿主 hooks/命令模板、`dreamrsimem` CLI
+  （doctor/plugin/memory/退出码）、`opencode-install` 诊断等用例。
 - 版本 2.0.1 → 2.1.0。
 
 ## v2.0.1 · 2026-10-08
