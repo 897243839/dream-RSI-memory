@@ -2,58 +2,55 @@
 /**
  * Install / uninstall dream-rsi-memory for opencode.
  *
- * Strategy — mirrors how `opencode-acp` is installed on this machine
- * (see ~/.cache/opencode/packages/opencode-acp@latest): opencode loads npm
- * plugins from ~/.cache/opencode/packages/<name>@latest/ and resolves the
- * plugin entry through that scope's node_modules/<name>. Instead of fragile
- * junctions back into this repo (which die on `npm ci`, cache rebuilds or
- * opencode upgrades), we produce a fully self-contained install there:
+ * Layout — the scope root IS the plugin directory (same shape as
+ * billion-context@latest on this machine):
  *
- *   packages/dream-rsi-memory@latest/
- *     package.json                  private placeholder manifest
- *     node_modules/dream-rsi-memory/    real copy of package.json + dist/
- *     node_modules/@opencode-ai/plugin + runtime closure   (npm-managed)
+ *   ~/.cache/opencode/packages/dream-rsi-memory@latest/
+ *     index.js        shim: `export { default } from "./dist/index.js"`
+ *     package.json    the real manifest (exports["./server"] → ./dist/index.js)
+ *     dist/           built plugin
  *
- * The placeholder manifest is named "*-offline-installed" and marked private,
- * so opencode never tries to re-fetch the plugin from the npm registry (this
- * package is NOT published); the `file:` dependency keeps any later
- * `npm install` / `bun install` reproducible from this repo instead of failing
- * with a 404.
+ * opencode 2.x resolves a configured *directory* through its package.json
+ * "exports" (falling back to `<dir>/server.*` / `<dir>/index.*`); it never
+ * reads package.json "main" alone and it never looks inside node_modules for a
+ * path entry. dream has ZERO runtime dependencies (`@opencode-ai/plugin` is a
+ * peerDependency that opencode itself provides), so no node_modules layer is
+ * installed at all — and any node_modules / package-lock.json left behind by
+ * the previous nested layout is deleted on install (upgrade path).
  *
- * Two installation paths:
+ * Two installation paths (identical result — a flat copy of the plugin body):
  *
  *  dev  (default) — networked machine:
  *      + npm install && npm run install:opencode
  *      1. builds dist/  (needs local typescript)
- *      2. provisions ~/.cache/opencode/packages/dream-rsi-memory@latest/
- *         via a staging dir + `npm install --install-links` (real copies,
- *         no junctions) and swaps it in atomically
- *      3. adds the local package *directory* to the opencode config plugin array
+ *      2. copies index.js + package.json + dist/ into a staging dir and swaps
+ *         it into ~/.cache/opencode/packages/dream-rsi-memory@latest atomically
+ *      3. adds the scope *directory* to the opencode config plugin array
  *         (opencode 2.x drops absolute file targets: "configured plugin path
  *         must be a directory")
  *
- *  offline (intranet / no npm next) — no network, npm, or Node build needed:
- *      + On the networked machine:  npm run vendor
- *         -> produces ./vendor/{dist/,node_modules/} (self-contained assets)
+ *  offline (intranet / no npm) — no network, npm, or Node build needed:
+ *      + On the networked machine:  npm run vendor   (vendor/ = dist only)
  *      + Copy the repo (including vendor/) to the intranet machine, then:
- *           node scripts/install.mjs --offline
- *      1. restores dist from vendor if missing
- *      2. builds the scope node_modules closure by copying from ./vendor (no npm)
- *      3. adds `dream-rsi-memory` to the opencode config plugin array
+ *            node scripts/install.mjs --offline
+ *      or use the single-file installer:
+ *            npm run pack:offline  ->  dream-rsi-memory-offline.tar.gz
+ *                                        (install.ps1 / install.sh + plugin/)
  *
- * Idempotent: safe to re-run after every code change; the scope's
- * node_modules/dream-rsi-memory is a snapshot, so RE-RUN after each build.
- * Only a restart of opencode (or a fresh session) picks up a rebuilt dist.
+ * Idempotent: safe to re-run after every code change; the scope is a snapshot,
+ * so RE-RUN after each build. Only a restart of opencode (or a fresh session)
+ * picks up a rebuilt dist.
  *
  * Usage:
  *   node scripts/install.mjs [--offline] [--config PATH]
  *   node scripts/install.mjs --vendor          # build offline assets into vendor/
+ *   node scripts/install.mjs --offline-package # build install.ps1/sh installer
  *   node scripts/install.mjs --uninstall       # remove plugin entry + scope dir
  */
 import { createRequire } from "node:module"
-import { existsSync, mkdirSync, readFileSync, rmSync, cpSync, copyFileSync, statSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, cpSync, copyFileSync, statSync, renameSync, readdirSync, rmdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve, sep } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 
@@ -64,7 +61,6 @@ const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"))
 
 const CACHE = join(homedir(), ".cache", "opencode", "packages")
 const SCOPE_DIR = join(CACHE, "dream-rsi-memory@latest")
-const NM_DM = join(SCOPE_DIR, "node_modules", "dream-rsi-memory")
 
 /**
  * Plugin entry as an absolute **directory** path (forward slashes, JSON-string safe).
@@ -72,22 +68,22 @@ const NM_DM = join(SCOPE_DIR, "node_modules", "dream-rsi-memory")
  * opencode 2.x rejects absolute *file* targets: it logs
  * "configured plugin path must be a directory" and drops the entry, so the plugin
  * never loads (that is how both of this machine's plugins ended up silently dead).
- * A directory is resolved by core's `r0({directory})`, which does
- * `Bun.resolveSync("<dir>/server")` and then `Bun.resolveSync("<dir>/index")` —
- * it never reads package.json "main". That is why the repo ships an `index.js`
- * shim at the package root (copyPluginBody keeps it in sync).
+ * For a path plugin it reads `<dir>/package.json` "exports" (["./server"]), falling
+ * back to `<dir>/server.*` and `<dir>/index.*` — it never reads package.json "main"
+ * and never looks inside `<dir>/node_modules`. That is why the repo ships an
+ * `index.js` shim at the package root (copyPluginBody keeps it in sync) and why the
+ * scope root itself is the plugin directory.
  *
  * A bare package name (`dream-rsi-memory`) is worse still: it makes every opencode
  * start run `npm install <name>`, which on a machine whose registry is unreachable
  * fails with 404/ENOTFOUND and blocks session start for minutes.
  */
 function pluginEntrySpec() {
-    return NM_DM.split("\\").join("/")
+    return SCOPE_DIR.split("\\").join("/")
 }
 
 const VENDOR = join(REPO, "vendor")
 const VENDOR_DIST = join(VENDOR, "dist")
-const VENDOR_NM = join(VENDOR, "node_modules")
 
 const isWin = process.platform === "win32"
 const npmCmd = isWin ? "npm.cmd" : "npm"
@@ -170,65 +166,64 @@ function buildDist() {
     log(`dist ok (${pkg.version})`)
 }
 
-/** Runtime closure of a package: itself + transitive deps, resolved from a hoisted node_modules. */
-function closureOf(nodeModulesRoot, seed, acc = new Set()) {
-    for (const name of seed) {
-        if (!name || acc.has(name)) continue
-        acc.add(name)
-        const parts = name.split("/")
-        const metaPath = join(nodeModulesRoot, ...parts, "package.json")
-        if (!existsSync(metaPath)) continue
-        const meta = JSON.parse(readFileSync(metaPath, "utf8"))
-        const deps = meta.dependencies ? Object.keys(meta.dependencies) : []
-        closureOf(nodeModulesRoot, deps, acc)
-    }
-    return acc
-}
+/**
+ * The two packages the built plugin imports at runtime: dream's dist
+ * value-imports `@opencode-ai/plugin` (dist/lib/tools.js, dist/lib/v2-compat.js)
+ * and the SDK's `./tool.js` re-export in turn imports `zod`. opencode does not
+ * inject them into the plugin's module graph (its loader is a plain
+ * `import(entry)`), so both are copied into the scope's node_modules —
+ * machine-independent, no registry needed.
+ * NB: `@opencode-ai/plugin`'s package.json declares 4 dependencies
+ * (@ai-sdk/provider, @opencode-ai/sdk, effect, zod) — only `./tool.js` is
+ * reachable from dream's imports today, and that module's closure is just
+ * `zod` (4.1.8, itself dependency-free). The moment dist imports any other
+ * entry (/tui, /v2/effect, …) this closure is INCOMPLETE and the entry must be
+ * added here; the smoke import in verifyInstall() is what catches it.
+ */
+const RUNTIME_PACKAGES = ["@opencode-ai/plugin", "zod"]
 
-/** Copy each top-level package of `set` from src node_modules into dst node_modules (flat). */
-function copyClosure(srcNmRoot, dstNmRoot, set, label) {
-    for (const name of set) {
-        const parts = name.split("/")
-        const srcPath = join(srcNmRoot, ...parts)
-        if (!existsSync(srcPath)) continue
-        const dstPath = join(dstNmRoot, ...parts)
-        mkdirSync(dirname(dstPath), { recursive: true })
-        cpSync(srcPath, dstPath, { recursive: true })
-    }
-    log(`${label}: ${dstNmRoot} (${set.size} tops)`)
-}
-
-/** Real plugin body (package.json + index.js shim + dist/) mirroring the published layout. */
-function copyPluginBody(dstNodeModulesRoot) {
-    const dmDir = join(dstNodeModulesRoot, "dream-rsi-memory")
-    rmSync(dmDir, { recursive: true, force: true })
-    mkdirSync(dmDir, { recursive: true })
-    cpSync(join(REPO, "package.json"), join(dmDir, "package.json"))
-    // opencode 2.x resolves a plugin directory via `<dir>/index.*`, not package.json
-    // "main" — without this shim the installed package would not load at all.
+/**
+ * Real plugin body (package.json + index.js shim + dist/ + the two runtime
+ * packages) copied **flat** into `dstDir` — the scope root is the plugin
+ * directory, and node_modules only ever holds RUNTIME_PACKAGES (no
+ * node_modules/dream-rsi-memory layer).
+ */
+function copyPluginBody(dstDir) {
+    rmSync(dstDir, { recursive: true, force: true })
+    mkdirSync(dstDir, { recursive: true })
+    cpSync(join(REPO, "package.json"), join(dstDir, "package.json"))
+    // opencode 2.x resolves a plugin directory via package.json "exports" (or
+    // `<dir>/index.*`), never package.json "main" alone — without this shim the
+    // installed package would not load at all.
     const shim = join(REPO, "index.js")
     if (!existsSync(shim)) fail(`missing ${shim} (opencode 2.x needs <dir>/index.js)`)
-    cpSync(shim, join(dmDir, "index.js"))
-    copyTree(join(REPO, "dist"), join(dmDir, "dist"), `plugin dist → ${join(dmDir, "dist")}`)
-    return dmDir
+    cpSync(shim, join(dstDir, "index.js"))
+    if (copyTree(join(REPO, "dist"), join(dstDir, "dist"), `plugin dist → ${join(dstDir, "dist")}`) === false)
+        fail(`missing ${join(REPO, "dist")} — build it first (skip --offline so buildDist() runs)`)
+
+    for (const name of RUNTIME_PACKAGES) {
+        const parts = name.split("/")
+        const src = join(REPO, "node_modules", ...parts)
+        if (!existsSync(join(src, "package.json")))
+            fail(`missing ${src} — run \`npm install\` once on a networked machine (or use \`npm run pack:offline\`, which carries it)`)
+        const dst = join(dstDir, "node_modules", ...parts)
+        rmSync(dst, { recursive: true, force: true })
+        mkdirSync(dirname(dst), { recursive: true })
+        cpSync(src, dst, { recursive: true })
+        log(`runtime package → ${dst}`)
+    }
+    return dstDir
 }
 
-/** Bundle runtime deps into vendor/ for offline/intranet transfer. */
+/** Bundle the built dist into vendor/ for offline/intranet transfer. */
 function makeVendor() {
     if (!FLAG.offline) buildDist()
     else if (!existsSync(join(REPO, "dist", "index.js"))) fail(`--offline needs dist/ — run without --offline (or --vendor) on a networked machine first`)
-    if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin", "package.json")))
-        fail("missing node_modules/@opencode-ai/plugin — run `npm install` once on the networked machine")
 
-    // dist
+    // dist only — no closure is vendored here BECAUSE the runtime packages
+    // (@opencode-ai/plugin + zod) ride along with the scope payload itself
+    // (copyPluginBody), not because the plugin were dependency-free.
     copyTree(join(REPO, "dist"), VENDOR_DIST, `vendor dist → ${VENDOR_DIST}`)
-    // runtime closure: @opencode-ai/plugin + everything the built code loads
-    const runtimeDeps = closureOf(join(REPO, "node_modules"), ["@opencode-ai/plugin"])
-
-    rmSync(VENDOR_NM, { recursive: true, force: true })
-    mkdirSync(VENDOR_NM, { recursive: true })
-    copyClosure(join(REPO, "node_modules"), VENDOR_NM, runtimeDeps, "vendor node_modules")
-    // package deps of vendored tree are self-contained (already inside each copy if nested)
 
     // single-file archive for intranet transfer (git-ignored, release/article friendly).
     // Self-contained: vendor/ + the installer itself + package.json — a target machine
@@ -254,8 +249,11 @@ function makeVendor() {
  * (no npm, no cache keys, works across any npm/Node version):
  *   vendor/offline/
  *     install.ps1 / install.sh        one-command installer (copies files)
- *     plugin/                         the plugin body (package.json + dist/)
- *     closure/                        runtime deps (flat node_modules layout)
+ *     plugin/                         the full scope payload, laid down at the
+ *                                     scope root by the installer:
+ *                                       package.json + index.js shim + dist/
+ *                                       node_modules/@opencode-ai/plugin + node_modules/zod
+ *                                     (the only two runtime packages — no closure of others)
  *     package.json                    plugin metadata (informational)
  *     README-offline.txt              quick start
  *   dream-rsi-memory-offline.tar.gz   <- single file to carry to the intranet machine
@@ -267,30 +265,23 @@ function makeVendor() {
 function makeOfflinePackage() {
     const offlineRoot = join(VENDOR, "offline")
     const pluginDir = join(offlineRoot, "plugin")
-    const closureDir = join(offlineRoot, "closure")
     rmSync(offlineRoot, { recursive: true, force: true })
 
     buildDist()
 
-    // 1) plugin body (package.json + dist/)
-    mkdirSync(pluginDir, { recursive: true })
-    copyFileSync(join(REPO, "package.json"), join(pluginDir, "package.json"))
-    copyTree(join(REPO, "dist"), join(pluginDir, "dist"), "offline plugin dist")
+    // 1) the whole payload = flat plugin body + the two runtime packages
+    //    (dream's dist value-imports @opencode-ai/plugin, whose tool.js imports
+    //    zod — opencode injects neither, so they travel inside plugin/)
+    copyPluginBody(pluginDir)
 
-    // 2) runtime closure: @opencode-ai/plugin + everything the built code loads
-    const runtimeDeps = closureOf(join(REPO, "node_modules"), ["@opencode-ai/plugin"])
-    rmSync(closureDir, { recursive: true, force: true })
-    mkdirSync(closureDir, { recursive: true })
-    copyClosure(join(REPO, "node_modules"), closureDir, runtimeDeps, "offline closure")
-
-    // 3) assemble the installer folder
+    // 2) assemble the installer folder
     mkdirSync(offlineRoot, { recursive: true })
     copyFileSync(join(REPO, "package.json"), join(offlineRoot, "package.json"))
     writeFileSync(join(offlineRoot, "install.ps1"), offlinePs1(), "utf8")
     writeFileSync(join(offlineRoot, "install.sh"), offlineSh(), "utf8")
     writeFileSync(join(offlineRoot, "README-offline.txt"), offlineReadme(), "utf8")
 
-    // 4) single-file archive
+    // 3) single-file archive
     const archive = join(REPO, "dream-rsi-memory-offline.tar.gz")
     rmSync(archive, { force: true })
     const r = spawnSync("tar", ["-czf", archive, "-C", VENDOR, "offline"], { cwd: REPO, stdio: "pipe" })
@@ -313,60 +304,40 @@ $cacheDir   = Join-Path $env:USERPROFILE ".cache\\opencode\\packages"
 $configDir  = Join-Path $env:USERPROFILE ".config\\opencode"
 $target     = Join-Path $cacheDir "${PLUGIN_ID}@latest"
 $pluginSrc  = Join-Path $scriptDir "plugin"
-$closureSrc = Join-Path $scriptDir "closure"
-$scopeNm    = Join-Path $target "node_modules"
-$pluginDst  = Join-Path $scopeNm "${PLUGIN_ID}"
 
 Write-Host "=== ${PLUGIN_ID} ${ver} offline installer ===" -ForegroundColor Cyan
 
-if (-not (Test-Path $pluginSrc))  { Write-Host "[ERROR] plugin/ not found: $pluginSrc";  exit 1 }
-if (-not (Test-Path $closureSrc)) { Write-Host "[ERROR] closure/ not found: $closureSrc"; exit 1 }
+if (-not (Test-Path $pluginSrc)) { Write-Host "[ERROR] plugin/ not found: $pluginSrc"; exit 1 }
 
 New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
 New-Item -ItemType Directory -Path $configDir -Force | Out-Null
 New-Item -ItemType Directory -Path $target -Force | Out-Null
-if (Test-Path $scopeNm) { Remove-Item $scopeNm -Recurse -Force }
-New-Item -ItemType Directory -Path $scopeNm -Force | Out-Null
 
-Write-Host "[1/3] copying runtime closure..." -ForegroundColor Yellow
-Get-ChildItem -Path $closureSrc -Directory | ForEach-Object {
-    $dest = Join-Path $scopeNm $_.Name
-    if ($_.Name.StartsWith("@")) {
-        New-Item -ItemType Directory -Path $dest -Force | Out-Null
-        Get-ChildItem -Path $_.FullName -Directory | ForEach-Object {
-            $destScoped = Join-Path $dest $_.Name
-            if (Test-Path $destScoped) { Remove-Item $destScoped -Recurse -Force }
-            Copy-Item $_.FullName $destScoped -Recurse -Force
-        }
-    } else {
-        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-        Copy-Item $_.FullName $dest -Recurse -Force
-    }
+Write-Host "[1/3] copying plugin payload (dist/ + bundled node_modules)..." -ForegroundColor Yellow
+# Upgrade path: drop remnants of the OLD nested layout before copying. The
+# payload's node_modules replaces the target's wholesale, so stale npm-managed
+# closures and any ${PLUGIN_ID} layer are removed here, first.
+if (Test-Path (Join-Path $target "node_modules")) { Remove-Item (Join-Path $target "node_modules") -Recurse -Force }
+if (Test-Path (Join-Path $target "package-lock.json")) { Remove-Item (Join-Path $target "package-lock.json") -Force }
+Get-ChildItem -Path $pluginSrc -Force | ForEach-Object {
+    $dest = Join-Path $target $_.Name
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
 }
 
-Write-Host "[2/3] copying plugin..." -ForegroundColor Yellow
-New-Item -ItemType Directory -Path $pluginDst -Force | Out-Null
-Copy-Item (Join-Path $pluginSrc "package.json") (Join-Path $pluginDst "package.json") -Force
-# opencode 2.x resolves a plugin directory via <dir>/index.js (never package.json main)
-if (Test-Path (Join-Path $pluginSrc "index.js")) { Copy-Item (Join-Path $pluginSrc "index.js") (Join-Path $pluginDst "index.js") -Force }
-Copy-Item (Join-Path $pluginSrc "dist") (Join-Path $pluginDst "dist") -Recurse -Force
-
-$wrapper = @{ name = "${PLUGIN_ID}-offline-installed"; version = "${ver}"; private = $true; dependencies = @{ "${PLUGIN_ID}" = "${ver}" } }
-[System.IO.File]::WriteAllText((Join-Path $target "package.json"), ($wrapper | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
-
-# opencode 2.x rejects absolute file targets ("configured plugin path must be a
-# directory"), so the config entry is the package directory itself.
-$entry = $pluginDst
+Write-Host "[2/3] enabling plugin in opencode config..." -ForegroundColor Yellow
+# opencode 2.x loads a plugin from a directory (<dir>/index.js), so the config
+# entry is the target directory itself.
+$entry = $target
 $entrySpec = $entry -replace '\\\\','/'
 
-Write-Host "[3/3] enabling plugin in opencode config..." -ForegroundColor Yellow
 $configFile = Join-Path $configDir "opencode.json"
 if (-not (Test-Path $configFile)) { $configFile = Join-Path $configDir "opencode.jsonc" }
 if (Test-Path $configFile) {
     $raw = [System.IO.File]::ReadAllText($configFile)
     $quotedEntry = '"' + $entrySpec + '"'
-    # Legacy forms: bare package name (V1) or absolute *file* path (invalid in 2.x).
-    $legacy = [regex]::Match($raw, '"[^"]*' + [regex]::Escape("${PLUGIN_ID}") + '[^"]*"')
+    # Legacy forms: bare package name (V1) or an old path entry under the scope.
+    $legacy = [regex]::Match($raw, '"(?:' + [regex]::Escape("${PLUGIN_ID}") + '|[^"]*' + [regex]::Escape("${PLUGIN_ID}@latest") + '[^"]*)"')
     if ($raw.Contains($quotedEntry)) {
         Write-Host "plugin already listed in $configFile"
     } elseif ($legacy.Success) {
@@ -375,7 +346,7 @@ if (Test-Path $configFile) {
         # start (404 / ENOTFOUND blocks session start). Upgrade to the directory.
         $raw = $raw.Substring(0, $legacy.Index) + $quotedEntry + $raw.Substring($legacy.Index + $legacy.Length)
         [System.IO.File]::WriteAllText($configFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "upgraded legacy plugin entry to local directory in $configFile"
+        Write-Host "upgraded legacy plugin entry to scope directory in $configFile"
     } elseif ($raw -match '("plugins?"\\s*:\\s*)\\[[\\s\\S]*?\\]') {
         $m2 = [regex]::Match($raw, '("plugins?"\\s*:\\s*)\\[[\\s\\S]*?\\]')
         $inner = ($m2.Groups[2].Value -replace ',\\s*$','').Trim()
@@ -396,16 +367,29 @@ if (Test-Path $configFile) {
     Write-Host "created $configFile with plugin enabled"
 }
 
-if (Test-Path $entry) {
-    Write-Host "" -ForegroundColor Cyan
-    Write-Host "=== INSTALL SUCCESS ===" -ForegroundColor Green
-    Write-Host "Plugin location: $target"
-    Write-Host "Config updated : $configFile"
-    Write-Host "Restart opencode (or open a fresh session) to load v${ver}." -ForegroundColor White
-} else {
-    Write-Host "[FAIL] plugin entry missing: $entry" -ForegroundColor Red
+Write-Host "[3/3] verifying installed layout..." -ForegroundColor Yellow
+$required = @(
+    (Join-Path $target "index.js"),
+    (Join-Path $target "package.json"),
+    (Join-Path $target "dist\\index.js"),
+    (Join-Path $target "node_modules\\@opencode-ai\\plugin\\package.json"),
+    (Join-Path $target "node_modules\\zod\\package.json")
+)
+$missing = @($required | Where-Object { -not (Test-Path $_) })
+if ($missing.Count -gt 0) {
+    foreach ($m in $missing) { Write-Host "[FAIL] missing: $m" -ForegroundColor Red }
     exit 1
 }
+if (Test-Path (Join-Path $target "node_modules\\${PLUGIN_ID}")) {
+    Write-Host "[FAIL] legacy node_modules\\${PLUGIN_ID} layer still present" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "" -ForegroundColor Cyan
+Write-Host "=== INSTALL SUCCESS ===" -ForegroundColor Green
+Write-Host "Plugin location: $target"
+Write-Host "Config updated : $configFile"
+Write-Host "Restart opencode (or open a fresh session) to load v${ver}." -ForegroundColor White
 `
 }
 
@@ -422,49 +406,29 @@ CACHE_DIR="$HOME/.cache/opencode/packages"
 CONFIG_DIR="$HOME/.config/opencode"
 TARGET="$CACHE_DIR/${PLUGIN_ID}@latest"
 PLUGIN_SRC="$SCRIPT_DIR/plugin"
-CLOSURE_SRC="$SCRIPT_DIR/closure"
-SCOPE_NM="$TARGET/node_modules"
-PLUGIN_DST="$SCOPE_NM/${PLUGIN_ID}"
 
 echo "=== ${PLUGIN_ID} ${ver} offline installer ==="
 
-test -d "$PLUGIN_SRC"  || { echo "[ERROR] plugin/ not found: $PLUGIN_SRC";  exit 1; }
-test -d "$CLOSURE_SRC" || { echo "[ERROR] closure/ not found: $CLOSURE_SRC"; exit 1; }
+test -d "$PLUGIN_SRC" || { echo "[ERROR] plugin/ not found: $PLUGIN_SRC"; exit 1; }
 
 mkdir -p "$CACHE_DIR" "$CONFIG_DIR" "$TARGET"
-rm -rf "$SCOPE_NM"
-mkdir -p "$SCOPE_NM"
 
-echo "[1/3] copying runtime closure..."
-for entry in "$CLOSURE_SRC"/*; do
+echo "[1/3] copying plugin payload (dist/ + bundled node_modules)..."
+# Upgrade path: drop remnants of the old nested layout first; the payload's
+# node_modules replaces the target's wholesale.
+rm -rf "$TARGET/node_modules" "$TARGET/package-lock.json"
+for entry in "$PLUGIN_SRC"/*; do
     name=$(basename "$entry")
-    dest="$SCOPE_NM/$name"
-    if [[ "$name" == @* ]]; then
-        mkdir -p "$dest"
-        for sub in "$entry"/*; do
-            subname=$(basename "$sub")
-            rm -rf "$dest/$subname"
-            cp -a "$sub" "$dest/$subname"
-        done
-    else
-        rm -rf "$dest"
-        cp -a "$entry" "$dest"
-    fi
+    rm -rf "$TARGET/$name"
+    cp -a "$entry" "$TARGET/$name"
 done
 
-echo "[2/3] copying plugin..."
-mkdir -p "$PLUGIN_DST"
-cp "$PLUGIN_SRC/package.json" "$PLUGIN_DST/package.json"
-# opencode 2.x resolves a plugin directory via <dir>/index.js (never package.json main)
-if [ -f "$PLUGIN_SRC/index.js" ]; then cp "$PLUGIN_SRC/index.js" "$PLUGIN_DST/index.js"; fi
-cp -a "$PLUGIN_SRC/dist" "$PLUGIN_DST/dist"
-
-printf '%s\\n' '{"name":"${PLUGIN_ID}-offline-installed","version":"${ver}","private":true,"dependencies":{"${PLUGIN_ID}":"${ver}"}}' > "$TARGET/package.json"
-
-echo "[3/3] enabling plugin in opencode config..."
+echo "[2/3] enabling plugin in opencode config..."
 CONFIG="$CONFIG_DIR/opencode.json"
 test -f "$CONFIG" || CONFIG="$CONFIG_DIR/opencode.jsonc"
-ENTRY_SPEC="$PLUGIN_DST"
+# opencode 2.x loads a plugin from a directory (<dir>/index.js), so the config
+# entry is the target directory itself.
+ENTRY_SPEC="$TARGET"
 node -e '
 const fs = require("fs");
 const path = process.argv[1];
@@ -473,24 +437,30 @@ try { var cfg = JSON.parse(fs.readFileSync(path, "utf8")); } catch (e) { var cfg
 const list = (Array.isArray(cfg.plugins) ? cfg.plugins : Array.isArray(cfg.plugin) ? cfg.plugin : []).filter(Boolean);
 // opencode 2.x drops absolute file targets ("configured plugin path must be a
 // directory") and re-fetches bare names from the npm registry on every start.
-// Write the local directory and upgrade any legacy entry (bare name or file path).
-const at = list.findIndex((x) => typeof x === "string" && x.includes("dream-rsi-memory"));
+// Write the local directory and upgrade any legacy entry (bare name or old path).
+const at = list.findIndex((x) => typeof x === "string" && (x === "dream-rsi-memory" || x.includes("dream-rsi-memory@latest")));
 if (at >= 0) list[at] = entry; else list.push(entry);
 delete cfg.plugin;
 cfg.plugins = list;
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2));
 ' "$CONFIG" "$ENTRY_SPEC"
 
-if [ -f "$PLUGIN_DST/index.js" ]; then
-    echo ""
-    echo "=== INSTALL SUCCESS ==="
-    echo "Plugin location: $TARGET"
-    echo "Config updated : $CONFIG"
-    echo "Restart opencode (or open a fresh session) to load v${ver}."
-else
-    echo "[FAIL] plugin entry missing ($PLUGIN_DST/index.js)"
-    exit 1
+echo "[3/3] verifying installed layout..."
+missing=0
+for f in index.js package.json dist/index.js node_modules/@opencode-ai/plugin/package.json node_modules/zod/package.json; do
+    if [ ! -e "$TARGET/$f" ]; then echo "[FAIL] missing: $TARGET/$f"; missing=1; fi
+done
+if [ -e "$TARGET/node_modules/${PLUGIN_ID}" ]; then
+    echo "[FAIL] legacy node_modules/${PLUGIN_ID} layer still present"
+    missing=1
 fi
+if [ "$missing" -ne 0 ]; then exit 1; fi
+
+echo ""
+echo "=== INSTALL SUCCESS ==="
+echo "Plugin location: $TARGET"
+echo "Config updated : $CONFIG"
+echo "Restart opencode (or open a fresh session) to load v${ver}."
 `
 }
 
@@ -508,9 +478,12 @@ Linux / macOS:
     chmod +x install.sh && ./install.sh
 
 What it does (fully offline, no network needed):
-  1. copies runtime closure into ~/.cache/opencode/packages/${PLUGIN_ID}@latest/node_modules/
-  2. copies plugin dist/ and package.json into the scope
-  3. enables "${PLUGIN_ID}" in ~/.config/opencode/opencode.json (or .jsonc)
+  1. copies the plugin payload (package.json + index.js shim + dist/ +
+     bundled node_modules/@opencode-ai/plugin + node_modules/zod) into
+     ~/.cache/opencode/packages/${PLUGIN_ID}@latest/  (scope root = the plugin)
+  2. enables "${PLUGIN_ID}" in ~/.config/opencode/opencode.json (or .jsonc)
+  3. verifies index.js / package.json / dist/index.js / the two bundled runtime
+     packages are present and no legacy node_modules/${PLUGIN_ID} layer remains
 
 Then restart opencode (or open a fresh session). Verify with: /dream status
 Uninstall at any time from the source repo: npm run uninstall:opencode
@@ -519,107 +492,167 @@ Uninstall at any time from the source repo: npm run uninstall:opencode
 
 /* ----------------------------------------------------- scope provisioning */
 /**
- * Placeholder manifest for the installed scope. Name is intentionally different
- * from the real plugin and `private: true` so opencode's plugin manager treats
- * the scope as already-installed and never tries the npm registry (which 404s
- * for this unpublished package). The `file:` dep guarantees a re-run of
- * `npm install`/`bun install` inside the scope still resolves, and the
- * `@opencode-ai/plugin` dep lets the runtime closure rebuild from the registry.
+ * Build the staging tree that becomes the entire scope root: package.json +
+ * index.js shim + dist/ + node_modules/{@opencode-ai/plugin, zod}, copied
+ * straight from this repo. No npm involved → works offline, needs no registry,
+ * and is machine-independent (the two runtime packages travel with the plugin).
  */
-function manifestText() {
-    // pin the plugin peer to the version actually installed in this repo, so
-    // `npm install` inside the scope never picks a newer registry release.
-    const pluginMeta = join(REPO, "node_modules", "@opencode-ai", "plugin", "package.json")
-    const pluginVer = existsSync(pluginMeta) ? JSON.parse(readFileSync(pluginMeta, "utf8")).version : undefined
-    const peerdep = pluginVer ?? pkg.peerDependencies?.["@opencode-ai/plugin"] ?? ">=1.4.3"
-    const absRepo = REPO.split(sep).join("/")
-    return JSON.stringify(
-        {
-            name: "dream-rsi-memory-offline-installed",
-            version: pkg.version,
-            private: true,
-            dependencies: {
-                "@opencode-ai/plugin": peerdep,
-                "dream-rsi-memory": `file:${absRepo}`,
-            },
-        },
-        null,
-        2
-    ) + "\n"
-}
-
-function writeManifest(dir) {
-    writeFileSync(join(dir, "package.json"), manifestText(), "utf8")
-}
-
-/** Write a stub .package-lock.json so opencode's package manager sees a settled scope. */
-function stubLock(dir) {
-    // npm writes node_modules/.package-lock.json on install; offline builds don't
-    // run npm, so emit a minimal vanity lock so the scope looks non-dirty.
-    const lockPath = join(dir, "node_modules", ".package-lock.json")
-    const payload = {
-        name: "dream-rsi-memory-offline-installed",
-        version: pkg.version,
-        lockfileVersion: 3,
-        requires: true,
-        packages: { "": { name: "dream-rsi-memory-offline-installed", version: pkg.version, private: true } },
-    }
-    mkdirSync(dirname(lockPath), { recursive: true })
-    writeFileSync(lockPath, JSON.stringify(payload, null, 2) + "\n", "utf8")
-}
-
-/** Provision via `npm install --install-links`: real copies, no junctions. */
-function provisionByNpm() {
-    const staging = join(CACHE, `.dream-rsi-memory@latest.staging-${process.pid}`)
+function provision(staging) {
     rmSync(staging, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
-    writeManifest(staging)
-    try {
-        run(npmCmd, ["install", "--install-links", "--no-audit", "--no-fund"], { cwd: staging })
-        copyPluginBody(join(staging, "node_modules"))
-    } catch (e) {
-        // registry unreachable — fall back to copying the closure from the repo's
-        // already-installed node_modules (works fully offline).
-        log(`npm install failed (${e?.message}); falling back to closure copy from repo node_modules`)
-        provisionByCopy(staging)
+    copyPluginBody(staging)
+}
+
+/**
+ * In-place upgrade: copy every staging file over the live tree, then delete
+ * live-only files best-effort. A running opencode may hold files under `dist/`
+ * — on Windows held files still accept overwrite, and deletions that hit a
+ * lock are skipped (they belong to the old payload and are retried on the
+ * next run). No file is removed before its replacement exists, so a crash
+ * mid-way leaves a working (if mixed) install; the new code activates on the
+ * next opencode restart.
+ */
+function mergeTree(src, dst) {
+    const keep = new Set()
+    // Windows file systems are case-insensitive: keep must be too, otherwise a
+    // pre-existing file whose case differs from the new name would be swept
+    // right after being overwritten (review P2 #8).
+    const key = (p) => (isWin ? p.toLowerCase() : p)
+    const copyFailures = []
+    const copy = (s, d) => {
+        mkdirSync(d, { recursive: true })
+        for (const name of readdirSync(s)) {
+            const sp = join(s, name)
+            const dp = join(d, name)
+            keep.add(key(dp))
+            if (statSync(sp).isDirectory()) copy(sp, dp)
+            else {
+                try {
+                    copyFileSync(sp, dp)
+                } catch (e) {
+                    // one held file must not abort the merge and masquerade as
+                    // a total failure — collect and report after the sweep
+                    copyFailures.push(`${dp} (${e.code || e.message})`)
+                }
+            }
+        }
     }
-    rmSync(join(staging, "package-lock.json"), { force: true })
-    installStagingInPlace(staging)
+    copy(src, dst)
+    const sweep = (d) => {
+        let names
+        try {
+            names = readdirSync(d)
+        } catch {
+            return
+        }
+        for (const name of names) {
+            const p = join(d, name)
+            let isDir = false
+            try {
+                isDir = statSync(p).isDirectory()
+            } catch {
+                continue
+            }
+            if (isDir) {
+                sweep(p)
+                if (keep.has(key(p))) continue // a kept empty dir must survive
+                try {
+                    rmdirSync(p)
+                } catch {
+                    // non-empty (held leftovers) → keep
+                }
+            } else if (!keep.has(key(p))) {
+                try {
+                    rmSync(p, { force: true })
+                } catch {
+                    // locked by a running process → retried on next upgrade
+                }
+            }
+        }
+    }
+    sweep(dst)
+    if (copyFailures.length > 0)
+        log(`** warning: ${copyFailures.length} file(s) could not be merged (locked?): ${copyFailures.slice(0, 5).join(", ")}${copyFailures.length > 5 ? ", …" : ""}`)
+    log(`upgraded in place → ${dst}`)
 }
 
-/** Provision without npm: copy plugin body + @opencode-ai/plugin closure from the repo/vendor. */
-function provisionByCopy(staging) {
-    const nm = join(staging, "node_modules")
-    mkdirSync(nm, { recursive: true })
-    writeManifest(staging)
-
-    copyPluginBody(nm)
-
-    // runtime closure for @opencode-ai/plugin, from vendor/ if present else repo
-    let src = VENDOR_NM
-    if (!existsSync(join(src, "@opencode-ai", "plugin"))) src = join(REPO, "node_modules")
-    if (!existsSync(join(src, "@opencode-ai", "plugin")))
-        fail("missing @opencode-ai/plugin in both vendor/ and repo node_modules — run `npm install` once on a networked machine")
-    const runtimeDeps = closureOf(src, ["@opencode-ai/plugin"])
-    copyClosure(src, nm, runtimeDeps, "scope node_modules")
-    stubLock(staging)
-}
-
-/** Atomically swap the staging scope into the real cache location. */
+/**
+ * Install the staging scope into the real cache location.
+ *
+ * opencode may have the plugin LOADED while we install (it hot-reloads when
+ * the config changes), which locks `dist/` on Windows — renaming the live
+ * directory then fails with EPERM. Strategy:
+ *  1. Atomic rename dance (live → .bak, staging → live), up to 3 attempts with
+ *     a short backoff for transient locks (antivirus scans). The OLD tree must
+ *     never be touched before the swap succeeds: a failed swap has to leave
+ *     the current install fully functional (the old nested-layout cleanup
+ *     therefore happens on .bak / inside mergeTree, not before the swap).
+ *  2. If the live dir stays locked, upgrade in place via mergeTree().
+ * Both paths end with the same layout assertions below, and the OLD trees
+ * (backup / staging) are only dropped afterwards by main() — deleting them
+ * before the assertions could strand the machine on a broken payload with no
+ * working install left to roll back to.
+ */
+const PENDING_CLEANUP = []
 function installStagingInPlace(staging) {
-    const backup = join(CACHE, `.dream-rsi-memory@latest.bak-${process.pid}`)
-    if (existsSync(SCOPE_DIR)) {
-        rmSync(backup, { recursive: true, force: true })
-        renameSync(SCOPE_DIR, backup)
-    }
+    // sweep leftovers of earlier runs; never our own staging payload
+    let siblings = []
     try {
-        renameSync(staging, SCOPE_DIR)
-    } catch (e) {
-        if (existsSync(backup)) renameSync(backup, SCOPE_DIR)
-        fail(`move ${staging} → ${SCOPE_DIR} failed: ${e?.message}`)
+        siblings = readdirSync(CACHE)
+    } catch {}
+    for (const name of siblings)
+        if (/^\.dream-rsi-memory@latest\.(bak|staging)-\d+$/.test(name) && !name.endsWith(`-${process.pid}`)) {
+            try {
+                rmSync(join(CACHE, name), { recursive: true, force: true })
+            } catch {
+                // locked leftover → next run
+            }
+        }
+
+    const backup = join(CACHE, `.dream-rsi-memory@latest.bak-${process.pid}`)
+    let swapped = false
+    if (existsSync(SCOPE_DIR)) {
+        for (let attempt = 1; attempt <= 3 && !swapped; attempt++) {
+            try {
+                renameSync(SCOPE_DIR, backup)
+                try {
+                    renameSync(staging, SCOPE_DIR)
+                } catch (e) {
+                    try {
+                        renameSync(backup, SCOPE_DIR) // roll back: live must stay intact
+                    } catch {}
+                    throw e
+                }
+                swapped = true
+            } catch (e) {
+                const locked = e && (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES")
+                if (!locked || attempt === 3) break
+                const wait = 400
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait)
+            }
+        }
+        if (swapped) {
+            log(`upgraded: replaced ${SCOPE_DIR}`)
+            PENDING_CLEANUP.push(backup) // dropped in main() after verifyInstall()
+        } else {
+            log(`scope dir locked by a running process — upgrading in place (restart opencode to activate)`)
+            mergeTree(staging, SCOPE_DIR)
+            PENDING_CLEANUP.push(staging) // dropped in main() after verifyInstall()
+        }
+    } else {
+        renameSync(staging, SCOPE_DIR) // fresh install: nothing to replace
     }
-    if (existsSync(backup)) rmSync(backup, { recursive: true, force: true })
-    if (!existsSync(join(NM_DM, "package.json"))) fail(`installed but missing ${join(NM_DM, "package.json")}`)
+
+    const required = [
+        join(SCOPE_DIR, "index.js"),
+        join(SCOPE_DIR, "package.json"),
+        join(SCOPE_DIR, "dist", "index.js"),
+        join(SCOPE_DIR, "node_modules", "@opencode-ai", "plugin", "package.json"),
+        join(SCOPE_DIR, "node_modules", "zod", "package.json"),
+    ]
+    for (const f of required) if (!existsSync(f)) fail(`installed but missing ${f}`)
+    if (existsSync(join(SCOPE_DIR, "node_modules", "dream-rsi-memory")))
+        fail(`legacy ${join(SCOPE_DIR, "node_modules", "dream-rsi-memory")} layer survived the upgrade`)
     log(`scope ready → ${SCOPE_DIR}`)
 }
 
@@ -635,61 +668,327 @@ function configPath(custom) {
 }
 
 /**
- * Any config value that names this plugin: the bare package name (V1 style), an
- * absolute *file* path (the invalid 2.0 first attempt) or the directory entry that
- * opencode 2.x actually accepts. All three must be recognisable so a stale form is
- * upgraded instead of staying silently dead.
+ * True if a parsed plugins-array element (string value) names this plugin —
+ * deliberately NARROW, because these values are also *replaced*, and a broad
+ * test could rewrite unrelated entries that merely mention the string (e.g. an
+ * mcp command path). Only two forms are recognised:
+ *   - the bare package name (V1 style, exact): "dream-rsi-memory"
+ *   - a path under this plugin's npm scope (V2 local directory or old path):
+ *     anything containing "dream-rsi-memory@latest"
+ * Matching happens on values INSIDE the plugins/plugin arrays only (see
+ * findPluginArrays) — never on the whole file.
  */
-const PLUGIN_ENTRY_RE = /"[^"]*dream-rsi-memory[^"]*"/
+function isDreamPluginEntry(v) {
+    return typeof v === "string" && (v === pluginEntrySpec() || v === PLUGIN_ID || v.includes(`${PLUGIN_ID}@latest`))
+}
 
-/** Remove every dream-rsi-memory plugin entry (bare name / file path / directory). */
+/**
+ * Remove the dream-rsi-memory plugin entries ONLY — surgically, from the
+ * `plugin`/`plugins` array(s) alone. Each array's elements are split at
+ * top-level commas, and only elements that are a bare string equal to (or
+ * scoped under) this plugin get dropped. Anything else — mcp command paths,
+ * unrelated plugins, comments/objects — is left untouched by design
+ * ("宁可少删不可误删"). If no array or no removable entry is found, the file is
+ * NOT modified and a warning is logged.
+ */
 function removeConfigPlugin(file) {
     const raw = readFileSync(file, "utf8")
-    if (!PLUGIN_ENTRY_RE.test(raw)) {
-        log(`plugin not listed in ${file}`)
+    let removed = 0
+    let noteLeft = false
+    let next = raw
+    // walk arrays back-to-front so earlier offsets stay valid as we rewrite
+    const arrays = findPluginArrays(next)
+    for (let k = arrays.length - 1; k >= 0; k--) {
+        const a = arrays[k]
+        const inner = next.slice(a.open + 1, a.close)
+        const elems = splitTopLevel(inner)
+        const kept = []
+        let changed = false
+        for (const e of elems) {
+            const s = e.trim()
+            const val = elemStringValue(s)
+            if (typeof val === "string" && isDreamPluginEntry(val)) {
+                removed++
+                changed = true
+            } else {
+                if (/dream-rsi-memory/.test(s)) noteLeft = true
+                kept.push(s)
+            }
+        }
+        if (!changed) continue
+        next = next.slice(0, a.open + 1) + kept.join(", ") + next.slice(a.close)
+    }
+    if (removed === 0) {
+        log(`plugin entry not found in ${file} — nothing removed`)
         return
     }
-    // drop the whole array element (entry + optional comma/space/newline)
-    const next = raw.replace(/[ \t]*"[^"]*dream-rsi-memory[^"]*",?[ \t]*\r?\n?/g, "")
+    assertJsonc(file, next)
     writeFileSync(file, next, "utf8")
-    log(`removed dream-rsi-memory plugin entries from ${file}`)
+    log(`removed ${removed} dream-rsi-memory plugin entry/entries from ${file}`)
+    if (noteLeft || /dream-rsi-memory/.test(next))
+        log(`NOTE: ${file} still mentions dream-rsi-memory (e.g. an mcp command path) — kept on purpose, only plugins/plugin arrays are edited`)
+}
+
+/** Split a JSON array body into top-level element strings (comma at depth 0).
+ * JSONC comments are copied through opaquely, so a comma or bracket inside a
+ * comment never splits or truncates an element. */
+function splitTopLevel(inner) {
+    const parts = []
+    let depth = 0
+    let inStr = false
+    let esc = false
+    let cur = ""
+    for (let i = 0; i < inner.length; i++) {
+        const c = inner[i]
+        if (esc) { cur += c; esc = false; continue }
+        if (inStr) {
+            cur += c
+            if (c === "\\") esc = true
+            else if (c === '"') inStr = false
+            continue
+        }
+        if (c === '"') { inStr = true; cur += c; continue }
+        if (c === "/" && inner[i + 1] === "/") {
+            const nl = inner.indexOf("\n", i)
+            const stop = nl < 0 ? inner.length : nl + 1
+            cur += inner.slice(i, stop)
+            i = stop - 1
+            continue
+        }
+        if (c === "/" && inner[i + 1] === "*") {
+            const end = inner.indexOf("*/", i + 2)
+            const stop = end < 0 ? inner.length : end + 2
+            cur += inner.slice(i, stop)
+            i = stop - 1
+            continue
+        }
+        if (c === "[" || c === "{" || c === "(") depth++
+        if (c === "]" || c === "}" || c === ")") depth--
+        if (c === "," && depth === 0) { parts.push(cur); cur = ""; continue }
+        cur += c
+    }
+    if (cur.trim().length > 0) parts.push(cur)
+    return parts
+}
+
+/** Index just past the JSON string whose opening quote is at `i` (escapes honoured). */
+function skipString(s, i) {
+    i++
+    while (i < s.length) {
+        if (s[i] === "\\") { i += 2; continue }
+        if (s[i] === '"') return i + 1
+        i++
+    }
+    return s.length
+}
+
+/** Index of the next character that is neither whitespace nor a JSONC comment
+ * (starting at `i`); returns s.length if there is none. Strings are NOT
+ * skipped — callers start this scan where a structural token is expected. */
+function nextSignificant(s, i) {
+    while (i < s.length) {
+        const c = s[i]
+        if (c === " " || c === "\t" || c === "\n" || c === "\r") { i++; continue }
+        if (c === "/" && s[i + 1] === "/") {
+            const nl = s.indexOf("\n", i)
+            if (nl < 0) return s.length
+            i = nl + 1
+            continue
+        }
+        if (c === "/" && s[i + 1] === "*") {
+            const end = s.indexOf("*/", i + 2)
+            if (end < 0) return s.length
+            i = end + 2
+            continue
+        }
+        return i
+    }
+    return s.length
+}
+
+/** Index of the `]` matching the `[` at `open`, honouring strings and JSONC
+ * comments (a `]` inside a comment does not close the array); -1 if unclosed. */
+function matchBracket(s, open) {
+    let depth = 1
+    let i = open + 1
+    while (i < s.length) {
+        const c = s[i]
+        if (c === '"') { i = skipString(s, i); continue }
+        if (c === "/" && s[i + 1] === "/") {
+            const nl = s.indexOf("\n", i)
+            if (nl < 0) return -1
+            i = nl + 1
+            continue
+        }
+        if (c === "/" && s[i + 1] === "*") {
+            const end = s.indexOf("*/", i + 2)
+            if (end < 0) return -1
+            i = end + 2
+            continue
+        }
+        if (c === "[") depth++
+        else if (c === "]") {
+            depth--
+            if (depth === 0) return i
+        }
+        i++
+    }
+    return -1
+}
+
+/** Every `"plugins"?: [` (or `"plugin": [`) array in the document, located by a
+ * JSONC-aware scan — NOT a non-greedy regex, which truncates on elements that
+ * contain `]` (e.g. Windows paths like `D:\proj [old]\plugin`). */
+function findPluginArrays(s) {
+    const found = []
+    let i = 0
+    while (i < s.length) {
+        const c = s[i]
+        if (c === '"') {
+            const end = skipString(s, i)
+            const key = s.slice(i + 1, end - 1)
+            const m = /^(\s*:\s*\[)/.exec(s.slice(end))
+            if ((key === "plugins" || key === "plugin") && m) {
+                const open = end + m[1].length - 1
+                const close = matchBracket(s, open)
+                if (close > open) {
+                    found.push({ key, open, close })
+                    i = close + 1
+                    continue
+                }
+            }
+            i = end
+            continue
+        }
+        if (c === "/" && s[i + 1] === "/") {
+            const nl = s.indexOf("\n", i)
+            i = nl < 0 ? s.length : nl + 1
+            continue
+        }
+        if (c === "/" && s[i + 1] === "*") {
+            const end = s.indexOf("*/", i + 2)
+            i = end < 0 ? s.length : end + 2
+            continue
+        }
+        i++
+    }
+    return found
+}
+
+/** The string value of a plugins-array element, or undefined when the element
+ * is anything other than (optionally leading comments +) a single JSON string. */
+function elemStringValue(s) {
+    const t = s.trim()
+    const m = /^(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*"((?:[^"\\]|\\.)*)"/.exec(t)
+    if (!m) return undefined
+    const rest = t.slice(m[0].length)
+    if (!/^(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*$/.test(rest)) return undefined
+    return m[1].replace(/\\"/g, '"')
+}
+
+/** Strip JSONC comments and trailing commas (validation only — the file keeps
+ * its original formatting), then require the result to parse. Every config
+ * write goes through this gate: a malformed edit must never reach disk. */
+function jsoncToJSON(s) {
+    let out = ""
+    // A UTF-8 BOM (Windows editors ship one) makes JSON.parse throw even though
+    // the structure is fine — skip it for validation; the file keeps its bytes.
+    let i = s.charCodeAt(0) === 0xfeff ? 1 : 0
+    while (i < s.length) {
+        const c = s[i]
+        if (c === '"') {
+            const end = skipString(s, i)
+            out += s.slice(i, end)
+            i = end
+            continue
+        }
+        if (c === "/" && s[i + 1] === "/") {
+            const nl = s.indexOf("\n", i)
+            i = nl < 0 ? s.length : nl
+            continue
+        }
+        if (c === "/" && s[i + 1] === "*") {
+            const end = s.indexOf("*/", i + 2)
+            i = end < 0 ? s.length : end + 2
+            continue
+        }
+        if (c === ",") {
+            const n = nextSignificant(s, i + 1)
+            if (n >= s.length || s[n] === "]" || s[n] === "}") { i++; continue } // trailing comma
+            out += c
+            i++
+            continue
+        }
+        out += c
+        i++
+    }
+    return out
+}
+
+function assertJsonc(file, next) {
+    try {
+        JSON.parse(jsoncToJSON(next))
+    } catch (e) {
+        fail(`refusing to write ${file}: the edit would not parse (${e.message})`)
+    }
 }
 
 /**
  * Insert the local **directory** plugin entry into a json/jsonc config.
- * A legacy entry found in place (bare name or absolute file path) is upgraded:
- * opencode 2.x drops file targets ("configured plugin path must be a directory")
- * and re-fetches bare names from the npm registry on every start, which blocks
+ * A legacy entry found in place (bare V1 name or an old path under the
+ * dream-rsi-memory@latest scope) is upgraded element-wise inside the
+ * plugins/plugin array only — never by a whole-file replace, so an mcp command
+ * path that merely mentions the scope can never be rewritten: opencode 2.x
+ * drops file targets ("configured plugin path must be a directory") and
+ * re-fetches bare names from the npm registry on every start, which blocks
  * session start when the registry is unreachable.
+ * Every write is gated by assertJsonc — a malformed edit must not reach disk.
  */
 function ensureConfigPlugin(file) {
     const entry = pluginEntrySpec()
     const quoted = JSON.stringify(entry)
     const raw = readFileSync(file, "utf8")
-    if (raw.includes(quoted)) {
-        log(`plugin already listed in ${file}`)
-        return
-    }
-    const legacy = PLUGIN_ENTRY_RE.exec(raw)
-    if (legacy) {
-        const next = raw.slice(0, legacy.index) + quoted + raw.slice(legacy.index + legacy[0].length)
+    const arrays = findPluginArrays(raw)
+    const elementsOf = (a) =>
+        splitTopLevel(raw.slice(a.open + 1, a.close)).map((e) => ({ text: e, value: elemStringValue(e) }))
+    const isLegacy = (el) => typeof el.value === "string" && el.value !== entry && isDreamPluginEntry(el.value)
+
+    // 1) already listed in a plugin array → nothing to do
+    for (const a of arrays)
+        for (const el of elementsOf(a))
+            if (el.value === entry) {
+                log(`plugin already listed in ${file}`)
+                return
+            }
+
+    // 2) legacy entry inside an array → upgrade THAT element only
+    for (const a of arrays) {
+        const els = elementsOf(a)
+        if (!els.some(isLegacy)) continue
+        const rebuilt = els.map((el) => (isLegacy(el) ? quoted : el.text.trim()))
+        const next = raw.slice(0, a.open + 1) + rebuilt.join(", ") + raw.slice(a.close)
+        assertJsonc(file, next)
         writeFileSync(file, next, "utf8")
         log(`upgraded plugin entry to local directory in ${file}`)
         return
     }
-    const m = raw.match(/(\s*"plugins?"\s*:\s*)\[([\s\S]*?)\]/)
-    if (m) {
-        const prefix = m[1]
-        const inner = m[2].trim()
+
+    // 3) no entry anywhere: append to the first plugin array (prefer V2 spelling)
+    const target = arrays.find((a) => a.key === "plugins") || arrays[0]
+    if (target) {
+        const inner = raw.slice(target.open + 1, target.close).trim()
         const newInner = inner.length === 0 ? quoted : `${inner.replace(/,\s*$/, "")}, ${quoted}`
-        const next = raw.slice(0, m.index) + `${prefix}[${newInner}]` + raw.slice(m.index + m[0].length)
+        const next = raw.slice(0, target.open + 1) + newInner + raw.slice(target.close)
+        assertJsonc(file, next)
         writeFileSync(file, next, "utf8")
-        log(`added local plugin entry to ${prefix.trim()} list in ${file}`)
+        log(`added local plugin entry to ${target.key} list in ${file}`)
         return
     }
-    // No plugin array: insert a top-level V2 `plugins` key after the opening brace.
-    // (opencode 2.0.24 accepts both `plugin` and `plugins`; `plugins` is the
-    // documented V2 key, so a brand-new config gets the modern spelling.)
+
+    // 4) no plugin array at all: insert a top-level V2 `plugins` key after the
+    // opening brace. (opencode 2.0.24 accepts both `plugin` and `plugins`;
+    // `plugins` is the documented V2 key.) An EMPTY object must get NO trailing
+    // comma — that was a config-breaking bug on `{}`.
     let depth = 0
     let inString = false
     let esc = false
@@ -703,21 +1002,43 @@ function ensureConfigPlugin(file) {
             continue
         }
         if (c === '"') { inString = true; continue }
+        if (c === "/" && raw[i + 1] === "/") {
+            const nl = raw.indexOf("\n", i)
+            i = nl < 0 ? raw.length : nl
+            continue
+        }
+        if (c === "/" && raw[i + 1] === "*") {
+            const end = raw.indexOf("*/", i + 2)
+            i = end < 0 ? raw.length : end + 1
+            continue
+        }
         if (c === "{" && depth === 0) braceAt = i
         else if (c === "{") depth++
         else if (c === "}") depth--
     }
     if (braceAt < 0) fail(`cannot insert plugin key into ${file}: no top-level object found`)
     const indent = "  "
-    const insertion = `\n${indent}"plugins": [${quoted}],`
+    const isEmpty = raw[nextSignificant(raw, braceAt + 1)] === "}"
+    const insertion = isEmpty ? `\n${indent}"plugins": [${quoted}]` : `\n${indent}"plugins": [${quoted}],`
     const next = raw.slice(0, braceAt + 1) + insertion + raw.slice(braceAt + 1)
+    assertJsonc(file, next)
     writeFileSync(file, next, "utf8")
     log(`added local plugin entry to plugin list in ${file}`)
 }
 
 /* ------------------------------------------------------------------ verify */
 function verifyInstall() {
-    const entry = `file:///${join(NM_DM, "index.js").split("\\").join("/")}`
+    // layout invariants first: the scope root IS the plugin dir, the two runtime
+    // packages it imports are bundled, and no legacy nested layer remains.
+    const bundled = [
+        join(SCOPE_DIR, "node_modules", "@opencode-ai", "plugin", "package.json"),
+        join(SCOPE_DIR, "node_modules", "zod", "package.json"),
+    ]
+    for (const f of bundled) if (!existsSync(f)) fail(`installed but missing bundled runtime package: ${f}`)
+    if (existsSync(join(SCOPE_DIR, "node_modules", "dream-rsi-memory")))
+        fail(`legacy nested layer still present: ${join(SCOPE_DIR, "node_modules", "dream-rsi-memory")}`)
+
+    const entry = `file:///${join(SCOPE_DIR, "index.js").split("\\").join("/")}`
     const script = `import(${JSON.stringify(entry)}).then((m) => {
         console.log("default id:", m.default && m.default.id, "| named exports:", Object.keys(m).length)
         if (!m.default || m.default.id !== "dream-memory") { console.error("unexpected plugin default export"); process.exit(2) }
@@ -725,7 +1046,7 @@ function verifyInstall() {
         console.log("smoke ok")
     }).catch((e) => { console.error(e); process.exit(1) })`
     const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: SCOPE_DIR, stdio: "inherit" })
-    if (r.status !== 0) fail("installed plugin failed to import — check node_modules closure")
+    if (r.status !== 0) fail("installed plugin failed to import — check dist/ and the bundled node_modules")
 }
 
 function restartNag() {
@@ -739,11 +1060,22 @@ function restartNag() {
 /* ---------------------------------------------------------------------- main */
 function uninstall() {
     const cfg = configPath(customCfg)
-    if (existsSync(cfg)) removeConfigPlugin(cfg)
+    // Delete the directory FIRST: a running opencode holds files under dist/
+    // and rmSync then throws EPERM. Removing the config entry before that
+    // would leave a half-deleted install still registered (and the failure
+    // would look total while the config was already edited).
     if (existsSync(SCOPE_DIR)) {
-        rmSync(SCOPE_DIR, { recursive: true, force: true })
-        log(`removed ${SCOPE_DIR}`)
+        try {
+            rmSync(SCOPE_DIR, { recursive: true, force: true })
+            log(`removed ${SCOPE_DIR}`)
+        } catch (e) {
+            const locked = e && (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES")
+            if (locked)
+                fail(`${SCOPE_DIR} is locked by a running process — quit opencode and re-run --uninstall (config left untouched)`)
+            throw e
+        }
     }
+    if (existsSync(cfg)) removeConfigPlugin(cfg)
     log("uninstall done. restart opencode to drop the plugin.")
 }
 
@@ -763,7 +1095,8 @@ function main() {
         makeVendor()
         log(`
 vendor done (${pkg.version})
-  assets: ${VENDOR}  (dist/ + node_modules/)
+  assets: ${VENDOR}  (dist/ only — no bundled packages; the scope payload always
+  carries node_modules/{@opencode-ai/plugin, zod} itself, see copyPluginBody)
 On the intranet machine (Node >= 18 installed), extract the same dir and run:
   node scripts/install.mjs --offline
 `)
@@ -797,29 +1130,32 @@ On the intranet machine (Node >= 18 installed), extract the same dir and run:
         buildDist()
     }
 
+    // provision is copy-only (repo → staging), identical online and offline
     const staging = join(CACHE, `.dream-rsi-memory@latest.staging-${process.pid}`)
-    if (FLAG.offline) {
-        provisionByCopy(staging)
-        installStagingInPlace(staging)
-    } else {
-        provisionByNpm()
-    }
+    provision(staging)
+    installStagingInPlace(staging)
 
     const cfg = configPath(customCfg)
     if (existsSync(cfg)) ensureConfigPlugin(cfg)
-    else fail(`no opencode config found at ${cfg}; create one with  "plugin": ["dream-rsi-memory"]  then re-run`)
+    else fail(`no opencode config found at ${cfg}; create one with  "plugins": ["dream-rsi-memory"]  then re-run`)
 
     verifyInstall()
+    // the new payload is asserted AND imports — only now drop the old trees.
+    // Deleting them earlier would leave a broken payload unrollbackable.
+    for (const p of PENDING_CLEANUP) {
+        try {
+            rmSync(p, { recursive: true, force: true })
+        } catch {
+            log(`note: kept ${p} (locked); swept on next run`)
+        }
+    }
     restartNag()
 
-    const sourceNote = FLAG.offline ? `copied from ${join(VENDOR_NM)}` : `npm-managed (file: → ${REPO})`
     log(`
 install done (dream-rsi-memory v${pkg.version})
-  scope dir : ${SCOPE_DIR}
-  plugin    : ${NM_DM}  ${sourceNote}
+  scope dir : ${SCOPE_DIR}  (scope root = the plugin: index.js + package.json + dist/)
+  runtime   : ${join(SCOPE_DIR, "node_modules")}  (@opencode-ai/plugin + zod bundled with the plugin)
   config    : ${cfg}
-  NOTE: node_modules/dream-rsi-memory is a SNAPSHOT — re-run
-        \`npm run install:opencode\` after building new dist, then restart opencode.
 Uninstall: node scripts/install.mjs --uninstall
 `)
 }
