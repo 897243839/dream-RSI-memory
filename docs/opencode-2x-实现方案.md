@@ -77,9 +77,9 @@
 目的：确定「之前插件不行」的真因，是**加载失败**还是**加载成功但工具/命令不可用**。
 
 步骤：
-1. `npm run build`（= clean + tsc），确认 `dist/index.js` 存在且含 magic string `dream-memory`。
+1. `npm run build`（= clean + tsc），确认 `dist/index.js` 存在且含 magic string `dream-rsi-memory`。
 2. `node scripts/install.mjs`，确认输出 `scope ready → ...\dream-rsi-memory@latest` 且 smoke ok。
-3. 检查 `~/.config/opencode/opencode.json` 是否写入 `plugins: [".../dream-rsi-memory@latest/node_modules/dream-rsi-memory"]`。
+3. 检查 `~/.config/opencode/opencode.json` 是否写入 `plugins: [".../dream-rsi-memory@latest"]`（scope 根即插件目录，无嵌套层）。
 4. **完全退出并重启** opencode 2.0.26（插件目录型条目只在启动时加载）。
 5. 看启动日志是否出现插件 ready；在 2.x 会话里试 `/dream status`、调 `dream_rsi_memory_status`。
 
