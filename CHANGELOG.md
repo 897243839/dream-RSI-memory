@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v2.1.1 · 2026-10-10
+
+- **6 个工具改为宿主顶层工具（对齐 billion-context 的注册方式）**：
+  - `toV2Tool`（`src/lib/v2-compat.ts`）注册时补 `options: { codemode: false }`——
+    缺省时工具会被折进 Code Mode catalog（只能经 `execute` 间接调用），显式
+    `codemode: false` 才留在宿主顶层工具表，模型直接调用、UI 显示「调用…」。
+    依据：`@opencode/schema@2.0.26` `tool.d.ts` 的 `Options`，与
+    billion-context `src/agent/opencode-v2.ts:401` 同款做法；`permission` 不设，
+    保持宿主默认权限行为。
+  - 更正本文件 v2.0.0 条目里「已无 V1 `experimental.primary_tools` 等价物」的
+    结论：V2 下等价物就是 `options.codemode: false`。
+  - `test/entry.test.mjs` 增加断言钉死每个注册工具的 `options.codemode === false`。
+
 ## v2.1.0 · 2026-10-08
 
 **第一期改造：P0 拆门槛 + P1 策略池播种 + P2 检索信号落盘 + LLM 候选默认开**

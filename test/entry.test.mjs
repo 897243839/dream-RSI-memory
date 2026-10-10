@@ -153,6 +153,11 @@ test("setup registers tools, commands and hooks under an isolated project", asyn
             assert.equal(typeof definition.execute, "function", `${definition.name}.execute`)
             assert.equal(typeof definition.description, "string", `${definition.name}.description`)
             assert.ok(definition.input, `${definition.name}.input 必须是 ValueSchema`)
+            assert.equal(
+                definition.options?.codemode,
+                false,
+                `${definition.name} 必须显式 codemode:false 才会留在宿主顶层工具表（否则折进 Code Mode catalog，只能经 execute 调用）`,
+            )
         }
 
         assert.deepEqual(state.commands.map((c) => c.name).sort(), ["dream", "memory"])

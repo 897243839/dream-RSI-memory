@@ -210,6 +210,9 @@ billion 的双入口 = `{ id, setup, server }`：2.x 调 `setup()`，1.x 调 `se
 - **工具定义必须真实**：V1 宿主静态加载工具定义，`args` 直接给 `definition.args`（真实 zod 表），不要包一层（否则 args 解析失效）。
 - **`command.execute.before` 禁用**：仅注册模板，不挂该 hook（2.1.0 的 500 根因）。
 - **`experimental.primary_tools` 无等价物**：不需要。
+  - **2026-10 更正（见 CHANGELOG Unreleased）**：V2 下存在等价物——注册时
+    `options: { codemode: false }` 可让工具留在宿主顶层工具表，否则缺省折进
+    Code Mode catalog（只能经 `execute` 间接调用）。
 - **双版本共存**：V1 与 V2 可同时存在于同一入口对象；opencode 按版本各取所需，数据目录共用。
 
 ---
