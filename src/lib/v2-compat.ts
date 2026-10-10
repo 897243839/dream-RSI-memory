@@ -233,6 +233,13 @@ export function toV2Tool(
         name,
         description: definition.description,
         input: tool.schema.object(definition.args),
+        // 顶层工具：显式 `codemode: false` 把工具留在宿主顶层工具表（模型直接调用），
+        // 否则缺省会被折进 Code Mode catalog（只能经 `execute` 间接调用）。
+        // 一手依据：宿主 opencode v2.0.26 二进制内 `Tool.snapshot` ——
+        //   `filter(... options?.codemode===!1)` 出直接工具集，`codemode!==!1` 进 execute 目录；
+        // 官方类型 @opencode/schema@2.0.26 tool.d.ts `Options`；billion-context 同款做法
+        // （src/agent/opencode-v2.ts:401）。permission 不设，保持宿主默认权限行为。
+        options: { codemode: false },
         execute: async (input, ctx: V2ToolContext) => {
             const legacyContext = {
                 sessionID: ctx?.sessionID ?? "",
