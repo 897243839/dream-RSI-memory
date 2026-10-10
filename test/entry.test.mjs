@@ -126,13 +126,13 @@ function projectWithConfig(overrides = {}) {
     } }
 }
 
-test("plugin entry exports a V2 Plugin (id + setup)", async () => {
+test("plugin entry exports a dual V1+V2 module (id + setup + server)", async () => {
     const mod = await loadEntry()
 
     assert.equal(typeof mod.default, "object")
     assert.equal(mod.default.id, "dream-memory")
     assert.equal(typeof mod.default.setup, "function", "V2 入口必须导出 setup")
-    assert.ok(!("server" in mod.default), "2.0 不再保留 V1 server")
+    assert.equal(typeof mod.default.server, "function", "V1 入口必须导出 server（billion-context 同构）")
     assert.ok(!("tui" in mod.default), "should not declare a tui surface")
 })
 

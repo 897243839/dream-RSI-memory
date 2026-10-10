@@ -4,8 +4,14 @@
     "type": "module",
     "description": "dream-RSI-memory — a self-evolving long-term memory plugin for opencode: an independent implementation of the Dream-RSI technique (arXiv:2609.14858). No affiliation with Google.",
     "main": "./dist/index.js",
+    "bin": {
+        "dreamrsimem": "./dist/cli.js"
+    },
     "exports": {
         ".": {
+            "import": "./dist/index.js"
+        },
+        "./server": {
             "import": "./dist/index.js"
         }
     },
@@ -19,6 +25,7 @@
         "typecheck": "tsc --noEmit",
         "test": "npm run build && node --test \"test/*.test.mjs\"",
         "install:opencode": "node scripts/install.mjs",
+        "cli": "node dist/cli.js",
         "install:opencode:offline": "node scripts/install.mjs --offline",
         "vendor": "node scripts/install.mjs --vendor",
     "pack:offline": "node scripts/install.mjs --offline-package",
