@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+## v2.1.0 · 2026-10-08
+
+**第一期改造：P0 拆门槛 + P1 策略池播种 + P2 检索信号落盘 + LLM 候选默认开**
+
+- **P0 三阶段门槛（S/M/F，替代单一 `n < minNodes` 硬闸）**：
+  - 新增 `dream.minNodesProvisional`（N1=5）、`dream.minValidNodes`（=3）；`dream.minNodes`
+    （N2=20）语义改为"正式期起点"。阶段判定集中在 `src/lib/stages.ts:getStage`，
+    dream/nudge/菜单/低分提示全部走封装，无散落的字面阈值判断。
+  - S 播种期（n<5）：不再静默 return——**写一条 `status:"done"` 的 DreamRunRecord**
+    （`notes: insufficient: n=<n> < 5`、`candidatesJson:"[]"`），返回文案显式声明
+    "证据不足、信号采集中"（论文附录 B.2 的 bootstrap 语义）。
+  - M 试用期（5≤n<20）：正常评估；valid 样本数 < `minValidNodes` 时改走
+    **只过 train 且 ε 加倍**（`2*epsilon`）的放宽门槛，否则维持现有双门槛；
+    切换出的策略带 `provisional: true` 标记（`PolicyRecord` 新字段）。
+  - F 正式期（n≥20）：门槛不变；dream 后若 active 带 provisional：发生切换→新策略无标记，
+    守擂成功→清除其 provisional 标记（转正）。
+  - 文案按阶段三选一：菜单 sizeLine、`/dream` 帮助、低分劝 dream 的提示
+    （n<5 改劝 search/commit，避免撞 S 期返回）；nudge：F 期照旧催进化，
+    **M 期新增低频试调提示**（`DREAM_NUDGE_TRIAL`，同 GateRegistry 节流），S 期不催。
+  - **接通死配置 `dream.enabled`**：false 时 `dream_rsi_memory_dream` 工具与 `/dream run`
+    返回"已禁用"、nudge 不注入、低分提示不劝 dream。
+- **P1 初始池播种 + 候选多样性**：
+  - 新增 `dream.seedCount`（=5）、`dream.seed`（测试固定种子）；建库/索引重建时在
+    p-default 之外生成 5 组对 DEFAULT_PARAMS 做 **seeded ±20% 扰动**的候选
+    （`source:"seed"`、`isActive:false`、不激活），p-default 标 `source:"default"`。
+    RNG 为 mulberry32，种子 = `config.seed ?? fnv1a32(projectId+createdAt)`，写进
+    `PolicyRecord.seed` 保证可复现。
+  - dream 候选装配 = π₀ 保底（active 永远第一位）+ 池中全部 seed 策略 + 启发式变体
+    （每次运行再做一次 seeded ±20% 微扰，补上设计文档 §9.6 规划的探索）+ LLM ≤2。
+  - **LLM curator 默认开**：`curator.enabled` 默认 `true`，默认
+    `providerID:"opencode"` / `modelID:"mimo-v2.6-flash-free"`（可在配置覆盖）；
+    **LLM 调用失败/超时优雅降级**——只损失本次候选，dream 照常完成，
+    `DreamRunRecord.notes` 记 `curator: <error>`。
+- **P2 queryLog 落盘 + 真实查询回放 + 在线战绩**：
+  - 新文件 `src/lib/querylog.ts`：三个用户面检索出口（工具 search / 命令 `/dream search`
+    / 菜单 teaser）写 `dataDir/<projectId>/querylog.jsonl`
+    （`{ts, turnIndex, query, policyId, trigger, results[]}`）；内部评估
+    （status/menuStats/dream 打分）不落盘。上限 `queryLogMax`（=1000），append 后裁最旧。
+  - `replay.ts` 新增真实查询用例：可见集 = turnIndex ≤ 查询时刻的节点，用 log.query
+    原文检索；标签集 = 窗口 `queryWindowTurns`（=50）内 outcome=success 且 files 与查询
+    提取文件有交集的节点（**标签与被评估策略无关**，防自我确认）；真实 ∪ 合成并入 train
+    （valid 仍是纯合成 holdout）。真实用例数 < `replayMinRealQueries`（=10）时回退现状，
+    旧用例不依赖 queryLog 也全绿。`ReplayReport` 新增 `realCases` 字段。
+  - 新增 `store.onlineStats(policyId)`：served = queryLog 中该策略服务过的查询数，
+    success/failed/partial = `policyVersion === policyId` 的节点 outcome 计数；
+    `dream_rsi_memory_status` 输出末尾附每策略一行在线战绩。**本版只聚合展示，
+    不做任何自动调参（P3a 属第二期）**。
+- 测试 67 → 81：新增 S 期 insufficient 记录、M 期放宽门槛+provisional、F 期转正、
+  播种可复现、queryLog 写入/裁剪、replay 真实用例回退与并入、curator 关闭/失败降级、
+  `dream.enabled:false` 全禁用、三阶段 nudge 注入等用例；
+  `test/config.test.mjs` 断言 curator 默认值按新默认更新（旧行为断言过期）。
+- 版本 2.0.1 → 2.1.0。
+
+## v2.0.1 · 2026-10-08
+
+**破坏性变更：全量改名为 `dream-rsi-memory`（工具名变化对旧调用是 breaking）**
+
+- 插件 id、输出/日志前缀、配置文件名、数据目录三层统一为 `dream-rsi-memory`：
+  - 插件 id：`dream-memory` → `dream-rsi-memory`
+  - 输出/日志前缀：`[dream-memory]` → `[dream-rsi-memory]`（工具描述、命令回显、logger、菜单/系统提示、注入标记）
+  - 配置文件：`dream-memory.json(c)` → `dream-rsi-memory.json(c)`；各查找位置**新名优先、旧名兜底**（升级用户的旧名配置不丢）
+  - 数据目录：`…/opencode/storage/plugin/dream-memory/` → `…/dream-rsi-memory/`
+- **工具名改名（breaking）**——旧工具名调用会直接失败：
+
+  | 旧（≤ 2.0.0） | 新（2.0.1） |
+  | --- | --- |
+  | `dream_memory_commit` | `dream_rsi_memory_commit` |
+  | `dream_memory_search` | `dream_rsi_memory_search` |
+  | `dream_memory_node` | `dream_rsi_memory_node` |
+  | `dream_memory_status` | `dream_rsi_memory_status` |
+  | `dream_memory_policy` | `dream_rsi_memory_policy` |
+  | `dream_memory_dream` | `dream_rsi_memory_dream` |
+
+  聊天命令 `/dream *`、`/memory *` 不变；npm 包名 `dream-rsi-memory` 不变。
+- **旧数据目录自动迁移**：启动（`resolveConfig`）时，仅当使用**默认**数据目录且新目录
+  不存在、旧 `dream-memory/` 存在 → 整体 `rename` 过去；新旧目录都存在 → 用新目录、
+  旧目录原样保留（绝不合并/覆盖）并提示残留路径；用户显式配置 `dataDir` 的一律不碰。
+  失败原样抛出，不静默吞。配置文件读取同步加旧名 fallback。
+- `scripts/install.mjs` 冒烟校验（dist 魔串、`default.id`）同步改为新名。
+- 版本 2.0.0 → 2.0.1；`test/config.test.mjs` 新增旧配置名 fallback、数据目录迁移
+  （迁移/双目录并存/显式 dataDir 跳过）用例，测试全程沙箱 `XDG_DATA_HOME`。
+
 ## v2.0.0 · 2026-10
 
 **破坏性变更：整体迁移到 opencode 2.x 的 V2 插件 API（不再支持 opencode 1.x）**

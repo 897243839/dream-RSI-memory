@@ -6,12 +6,12 @@ import { tmpdir } from "node:os"
 import { pathToFileURL } from "node:url"
 
 const EXPECTED_TOOLS = [
-    "dream_memory_commit",
-    "dream_memory_search",
-    "dream_memory_node",
-    "dream_memory_status",
-    "dream_memory_policy",
-    "dream_memory_dream",
+    "dream_rsi_memory_commit",
+    "dream_rsi_memory_search",
+    "dream_rsi_memory_node",
+    "dream_rsi_memory_status",
+    "dream_rsi_memory_policy",
+    "dream_rsi_memory_dream",
 ]
 
 function loadEntry() {
@@ -55,7 +55,7 @@ function fakeV1Host(directory) {
         worktree: directory,
         serverUrl: new URL("http://127.0.0.1:4096"),
         $: () => {
-            throw new Error("$ (BunShell) is not used by dream-memory")
+            throw new Error("$ (BunShell) is not used by dream-rsi-memory")
         },
         experimental_workspace: { register() {} },
     }
@@ -67,7 +67,7 @@ function projectWithConfig(overrides = {}) {
     const data = mkdtempSync(join(tmpdir(), "dm-v1host-data-"))
     mkdirSync(join(project, ".opencode"))
     writeFileSync(
-        join(project, ".opencode", "dream-memory.jsonc"),
+        join(project, ".opencode", "dream-rsi-memory.jsonc"),
         JSON.stringify({ enabled: true, dataDir: data, distill: { enabled: false }, ...overrides }),
     )
     return {
@@ -107,8 +107,8 @@ test("V1 server registers the 6 tools and non-empty command templates", async ()
         assert.ok(config.command.memory, "缺少 memory 命令")
         assert.ok(config.command.dream.template.length > 0, "dream 模板不能为空")
         assert.ok(config.command.memory.template.length > 0, "memory 模板不能为空")
-        assert.match(config.command.dream.template, /dream_memory_status/)
-        assert.match(config.command.memory.template, /dream_memory_node/)
+        assert.match(config.command.dream.template, /dream_rsi_memory_status/)
+        assert.match(config.command.memory.template, /dream_rsi_memory_node/)
 
         // 其余 seam 都在；command.execute.before 禁用（2.1.0 的 500 根因）
         assert.equal(typeof hooks.event, "function")

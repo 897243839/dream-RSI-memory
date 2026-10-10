@@ -160,7 +160,7 @@ function buildDist() {
     }
     const entry = join(REPO, "dist", "index.js")
     if (!existsSync(entry)) fail(`build finished but missing ${entry}`)
-    if (!readFileSync(entry, "utf8").includes("dream-memory")) fail("dist/index.js does not look like the plugin (no magic string)")
+    if (!readFileSync(entry, "utf8").includes("dream-rsi-memory")) fail("dist/index.js does not look like the plugin (no magic string)")
     // opencode 2.x resolves a plugin directory as `<dir>/index.*` (never package.json "main").
     if (!existsSync(join(REPO, "index.js"))) fail(`missing ${join(REPO, "index.js")} (opencode 2.x needs <dir>/index.js)`)
     log(`dist ok (${pkg.version})`)
@@ -1041,7 +1041,7 @@ function verifyInstall() {
     const entry = `file:///${join(SCOPE_DIR, "index.js").split("\\").join("/")}`
     const script = `import(${JSON.stringify(entry)}).then((m) => {
         console.log("default id:", m.default && m.default.id, "| named exports:", Object.keys(m).length)
-        if (!m.default || m.default.id !== "dream-memory") { console.error("unexpected plugin default export"); process.exit(2) }
+        if (!m.default || m.default.id !== "dream-rsi-memory") { console.error("unexpected plugin default export"); process.exit(2) }
         if (typeof m.default.setup !== "function") { console.error("V2 plugin must export setup()"); process.exit(3) }
         console.log("smoke ok")
     }).catch((e) => { console.error(e); process.exit(1) })`

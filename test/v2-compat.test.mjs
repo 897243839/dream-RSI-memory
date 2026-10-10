@@ -170,8 +170,8 @@ test("toV2Tool carries sessionID/agent/worktree into the legacy tool context", a
         },
     }
 
-    const converted = toV2Tool("dream_memory_demo", definition, { directory: "C:/proj", rootPath: "C:/proj" })
-    assert.equal(converted.name, "dream_memory_demo")
+    const converted = toV2Tool("dream_rsi_memory_demo", definition, { directory: "C:/proj", rootPath: "C:/proj" })
+    assert.equal(converted.name, "dream_rsi_memory_demo")
     assert.ok(converted.input, "input 必须存在")
     assert.equal(typeof converted.execute, "function")
 

@@ -104,6 +104,19 @@ export function fileOverlap(a: string[], b: string[]): number {
     return common / Math.max(Math.min(a.length, b.length), 1)
 }
 
+/**
+ * 从自由文本（查询原文）中提取形如文件路径的 token，如 `src/billing.ts`、
+ * `C:\proj\a.tsx`、`a/b/c.json`。扩展名要求以字母开头且长度 2..5——
+ * 排除 `v2.0`、`e.g` 之类的伪路径。裸文件名（`billing.ts`）同样会提取，
+ * 由调用方负责 normalizeProjectPath 归一化后参与交集匹配。
+ * P2 真实查询回放（replay.evalRealCases）用它从 log.query 得到标签文件集。
+ */
+export function extractPathsFromText(text: string): string[] {
+    const matches = text.match(/(?:[A-Za-z]:)?[\w.@+-]+(?:[\\/][\w.@+-]+)*\.[A-Za-z][A-Za-z0-9]{1,4}/g)
+    if (!matches) return []
+    return [...new Set(matches)]
+}
+
 /** Cosine similarity over token maps, bounded [0, 1]. */
 export function tokenSimilarity(a: Map<string, number>, b: Map<string, number>): number {
     if (a.size === 0 || b.size === 0) return 0

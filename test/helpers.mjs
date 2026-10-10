@@ -13,7 +13,19 @@ export function baseConfig(overrides = {}) {
         capture: { maxMaterialChars: 6000 },
         curator: { enabled: false, timeoutMs: 5000 },
         menu: { enabled: true, cooldownTurns: 2, forceEveryTurns: 5, maxTokensHint: 200 },
-        dream: { enabled: true, minNodes: 20, trainRatio: 0.8, epsilon: 0.005, candidateCount: 3 },
+        dream: {
+            enabled: true,
+            minNodesProvisional: 5,
+            minNodes: 20,
+            minValidNodes: 3,
+            trainRatio: 0.8,
+            epsilon: 0.005,
+            candidateCount: 3,
+            seedCount: 5,
+            queryWindowTurns: 50,
+            replayMinRealQueries: 10,
+        },
+        queryLogMax: 1000,
         replayWeights: { fileHitRate: 0.35, failureAvoidRate: 0.25, precision: 0.25, recallBudget: 0.15 },
         autoCommitOnIdle: true,
         autoCommitIdleGapMs: 5 * 60_000,
@@ -22,7 +34,11 @@ export function baseConfig(overrides = {}) {
 }
 
 export async function loadStore(config = baseConfig()) {
-    return MemoryStore.load("tproj", "C:/proj", config.dataDir, fakeLogger)
+    return MemoryStore.load("tproj", "C:/proj", config.dataDir, fakeLogger, {
+        seedCount: config.dream?.seedCount,
+        seed: config.dream?.seed,
+        queryLogMax: config.queryLogMax,
+    })
 }
 
 export function commitN(store, n, overrides = {}) {

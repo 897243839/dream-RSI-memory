@@ -52,7 +52,11 @@ export async function createRuntime(directory: string, client: unknown): Promise
     }
 
     const projectId = projectIdOf(rootPath)
-    const store = await MemoryStore.load(projectId, rootPath, config.dataDir, logger)
+    const store = await MemoryStore.load(projectId, rootPath, config.dataDir, logger, {
+        seedCount: config.dream.seedCount,
+        seed: config.dream.seed,
+        queryLogMax: config.queryLogMax,
+    })
     logger.info("loaded", { projectId, nodes: store.count(), policy: store.activePolicy().policyId })
 
     const gate = new GateRegistry()

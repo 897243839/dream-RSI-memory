@@ -6,7 +6,7 @@ export class Logger {
     private log(level: Level, message: string, extra?: Record<string, unknown>): void {
         if (level === "debug" && !this.debugEnabled) return
         const suffix = extra ? ` ${JSON.stringify(extra)}` : ""
-        console.log(`[dream-memory][${level}] ${message}${suffix}`)
+        console.log(`[dream-rsi-memory][${level}] ${message}${suffix}`)
     }
 
     debug(message: string, extra?: Record<string, unknown>): void {

@@ -255,3 +255,48 @@ test("search: unrelated query must not score via empty bm25 (no phantom hits)", 
     const hits = store.search("zzzqqq nothing-here", [], { limit: 10 })
     assert.equal(hits.length, 0, "no token overlap means bm25=0 → fts normalized to 0, not 1")
 })
+
+/* ------------------------------------------------------- P1 初始池播种 */
+
+test("P1 播种：p-default 之外生成 5 组 seed 候选，均不激活", async () => {
+    const store = await loadStore()
+    const policies = store.listPolicies()
+    const seeds = policies.filter((p) => p.source === "seed")
+    assert.equal(seeds.length, 5)
+    assert.equal(policies.find((p) => p.policyId === "p-default").source, "default")
+    assert.equal(store.activePolicy().policyId, "p-default", "播种候选不激活")
+    assert.ok(seeds.every((p) => p.isActive === false), "seed 全部 isActive:false")
+    assert.ok(seeds.every((p) => typeof p.seed === "number"), "seed 写进记录可复现")
+})
+
+test("P1 播种可复现：固定 seed 两次一致，不同 seed 不同", async () => {
+    const seedParams = async (seed) => {
+        const cfg = baseConfig({ dream: { ...baseConfig().dream, seed } })
+        const s = await loadStore(cfg)
+        return s
+            .listPolicies()
+            .filter((p) => p.source === "seed")
+            .sort((a, b) => a.policyId.localeCompare(b.policyId))
+            .map((p) => JSON.stringify(p.params))
+    }
+    const a = await seedParams(42)
+    const b = await seedParams(42)
+    const c = await seedParams(7)
+    assert.equal(a.length, 5)
+    assert.deepEqual(a, b, "同 seed 两次加载必须一致")
+    assert.notDeepEqual(a, c, "不同 seed 应产生不同播种")
+})
+
+/* ------------------------------------------------------- P2 在线战绩 */
+
+test("P2 onlineStats：served 来自 querylog，outcome 计数来自 policyVersion", async () => {
+    const store = await loadStore()
+    commitN(store, 3, { outcome: "success", summary: "billing fix" })
+    store.search("billing", ["src/billing.ts"], { limit: 3, log: { trigger: "tool" } })
+    const stats = store.onlineStats("p-default")
+    assert.equal(stats.served, 1, "该策略服务过 1 次查询")
+    assert.equal(stats.success, 3, "3 个 success 节点由它服务期 commit")
+    assert.equal(stats.failed, 0)
+    assert.equal(stats.partial, 0)
+    assert.equal(store.onlineStats("p-seed-1").served, 0)
+})

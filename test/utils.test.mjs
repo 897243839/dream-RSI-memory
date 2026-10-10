@@ -43,7 +43,7 @@ test("isRootPath flags filesystem roots, accepts normal dirs", () => {
     assert.equal(isRootPath("C:\\"), true)
     assert.equal(isRootPath("/home"), true)
     assert.equal(isRootPath("C:/proj"), false)
-    assert.equal(isRootPath("D:\\Downloads\\dream-memory"), false)
+    assert.equal(isRootPath("D:\\Downloads\\dream-rsi-memory"), false)
     assert.equal(isRootPath("\\\\server\\share\\x"), false)
 })
 

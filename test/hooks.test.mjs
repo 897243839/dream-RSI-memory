@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 import { createCommandExecuteHandler, createEventHandler, createMessagesTransformHandler } from "../dist/lib/hooks.js"
 import { captureTurn, FileCollector } from "../dist/lib/capture.js"
 import { GateRegistry } from "../dist/lib/menu.js"
-import { baseConfig, fakeLogger, loadStore } from "./helpers.mjs"
+import { readQueryLog } from "../dist/lib/querylog.js"
+import { baseConfig, commitN, fakeLogger, loadStore } from "./helpers.mjs"
 
 const turn = (i, agent = "build") => ({
     messages: [{ info: { role: "user", agent, sessionID: "sess", id: "m" + i }, parts: [] }],
@@ -126,6 +127,12 @@ test("menu teaser surfaces a real cross-session hit", async () => {
     const menu = out.messages[0].parts[1].text
     assert.ok(menu.includes("命中历史"), "real cross-session hit must tease")
     assert.ok(menu.includes("invoice totals"), "teaser must carry the hit summary")
+
+    // P2: teaser 出口落盘（trigger=teaser）
+    const teaserLogs = readQueryLog(store.getProjectDir())
+    assert.equal(teaserLogs.length, 1, "teaser 检索必须写 querylog")
+    assert.equal(teaserLogs[0].trigger, "teaser")
+    assert.equal(teaserLogs[0].query, "fix the invoice total")
 })
 
 test("menu teaser stays quiet without a cross-session hit", async () => {
@@ -170,6 +177,13 @@ test("/dream search surfaces past nodes by keyword", async () => {
 
     await handler({ command: "memory", sessionID: "sess", arguments: "search nothing-here" }, {})
     assert.ok(sent[1].body.parts[0].text.includes("无结果"))
+
+    // P2: 命令出口落盘（trigger=command），每次 search 一行
+    const cmdLogs = readQueryLog(store.getProjectDir())
+    assert.equal(cmdLogs.length, 2, "两次 /dream search 各写一行")
+    assert.equal(cmdLogs[0].trigger, "command")
+    assert.equal(cmdLogs[0].query, "invoice total")
+    assert.equal(cmdLogs[1].query, "nothing-here")
 })
 
 test("/dream commit records a node with files from the collector", async () => {
@@ -193,4 +207,40 @@ test("/dream commit records a node with files from the collector", async () => {
     assert.deepEqual([...node.files], ["src/a.ts"])
     assert.equal(node.agentName, "command")
     assert.ok(sent[0].body.parts[0].text.includes("已记录节点"))
+})
+
+/* ------------------------------------------------------- P0 三阶段 nudge / 菜单 */
+
+test("dream nudge 按阶段注入：S 无 / M 试用提示 / F 进化催促 / 禁用不注入", async () => {
+    const run = async (cfg, nodeCount) => {
+        const store = await loadStore(cfg)
+        const handler = createMessagesTransformHandler(store, new GateRegistry(), cfg, new FileCollector())
+        await handler({}, turn(1)) // 冷启动：仅记回合，不注入（cooldown=2）
+        commitN(store, nodeCount, { summary: "fix the billing amount", files: ["src/billing.ts"], outcome: "success" })
+        const out = turn(2)
+        await handler({}, out)
+        return out.messages[0].parts
+    }
+
+    // S 播种期：只有菜单（文案=信号采集中），无 nudge
+    let parts = await run(baseConfig(), 3)
+    assert.equal(parts.length, 1, `S 期不应注入 nudge，得到 ${parts.length} 个 part`)
+    assert.ok(parts[0].text.includes("信号采集中"), "S 期菜单文案")
+
+    // M 试用期：菜单 + 试调提示
+    parts = await run(baseConfig(), 8)
+    assert.equal(parts.length, 2, "M 期应注入菜单+试用期提示")
+    assert.ok(parts[0].text.includes("试用期"), "M 期菜单文案")
+    assert.ok(parts[1].text.includes("试用期"), "M 期 nudge 文案")
+
+    // F 正式期：菜单 + 进化催促
+    parts = await run(baseConfig(), 22)
+    assert.equal(parts.length, 2, "F 期应注入菜单+进化催促")
+    assert.ok(parts[1].text.includes("进化策略"), "F 期 nudge 文案")
+
+    // dream.enabled=false：菜单照常，nudge 不注入
+    const off = baseConfig({ dream: { ...baseConfig().dream, enabled: false } })
+    parts = await run(off, 22)
+    assert.equal(parts.length, 1, "禁用时 nudge 不得注入")
+    assert.ok(parts[0].text.includes("[dream-rsi-memory]"), "菜单本身不受 dream 开关影响")
 })

@@ -23,19 +23,19 @@ const MEMORY_COMMAND_DESCRIPTION = "Dream-Memory：记忆库（stats / policy / 
 /** 无参 / `status` → 状态；`run` → 做梦。`$ARGUMENTS` 由宿主替换成用户输入。 */
 export const DREAM_COMMAND_TEMPLATE = `Dream-Memory 做梦引擎。用户参数（$ARGUMENTS）：
 
-- 参数为空或为 status：先调用工具 dream_memory_status，再把返回内容整理成一段中文简报。
-- 参数为 run：先调用工具 dream_memory_dream，再把返回内容整理成一段中文简报。
-- 其它参数：先调用工具 dream_memory_status，并提示可用参数为 status / run。
+- 参数为空或为 status：先调用工具 dream_rsi_memory_status，再把返回内容整理成一段中文简报。
+- 参数为 run：先调用工具 dream_rsi_memory_dream，再把返回内容整理成一段中文简报。
+- 其它参数：先调用工具 dream_rsi_memory_status，并提示可用参数为 status / run。
 
 必须先真正调用工具，再根据工具输出回答；不要凭猜测编造记忆库状态。`
 
 /** `stats` → 状态；`policy [<id>]` → 列策略 / 切换策略；`show <nodeId>` → 节点详情。 */
 export const MEMORY_COMMAND_TEMPLATE = `Dream-Memory 记忆库。用户参数（$ARGUMENTS）：
 
-- 参数为空或为 stats：先调用工具 dream_memory_status，再整理成中文简报。
-- 参数以 policy 开头：调用工具 dream_memory_policy；给出了策略 id 就带上 policy_id。
-- 参数以 show 开头：取出后面的节点 id，调用工具 dream_memory_node（参数 node_id）。
-- 其它参数：调用工具 dream_memory_status 并提示可用子命令 stats / policy / show。
+- 参数为空或为 stats：先调用工具 dream_rsi_memory_status，再整理成中文简报。
+- 参数以 policy 开头：调用工具 dream_rsi_memory_policy；给出了策略 id 就带上 policy_id。
+- 参数以 show 开头：取出后面的节点 id，调用工具 dream_rsi_memory_node（参数 node_id）。
+- 其它参数：调用工具 dream_rsi_memory_status 并提示可用子命令 stats / policy / show。
 
 必须先真正调用工具，再根据工具输出回答；不要凭猜测编造记忆库内容。`
 

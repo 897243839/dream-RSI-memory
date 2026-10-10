@@ -63,7 +63,7 @@ test("--version prints the package.json version", () => {
 
 test("memory list parses the data dir (XDG_DATA_HOME temp dir)", () => {
     const dataHome = mkdtempSync(join(tmpdir(), "dm-cli-xdg-"))
-    const projectDir = join(dataHome, "opencode", "storage", "plugin", "dream-memory", "proj-abc")
+    const projectDir = join(dataHome, "opencode", "storage", "plugin", "dream-rsi-memory", "proj-abc")
     const sessionsDir = join(projectDir, "sessions")
     mkdirSync(sessionsDir, { recursive: true })
     writeFileSync(
@@ -105,7 +105,7 @@ test("memory list parses the data dir (XDG_DATA_HOME temp dir)", () => {
 
 test("memory export renders project nodes as Markdown", () => {
     const dataHome = mkdtempSync(join(tmpdir(), "dm-cli-exp-"))
-    const projectDir = join(dataHome, "opencode", "storage", "plugin", "dream-memory", "proj-x")
+    const projectDir = join(dataHome, "opencode", "storage", "plugin", "dream-rsi-memory", "proj-x")
     const sessionsDir = join(projectDir, "sessions")
     mkdirSync(sessionsDir, { recursive: true })
     writeFileSync(

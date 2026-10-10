@@ -12,8 +12,8 @@ import {
 import { createRuntime } from "./lib/runtime.js"
 import { createV1Hooks } from "./lib/v1-host.js"
 
-const DREAM_COMMAND_DESCRIPTION = "Dream-Memory：做梦引擎（status / run）"
-const MEMORY_COMMAND_DESCRIPTION = "Dream-Memory：记忆库（stats / policy / show <nodeId>）"
+const DREAM_COMMAND_DESCRIPTION = "Dream-RSI-Memory：做梦引擎（status / run）"
+const MEMORY_COMMAND_DESCRIPTION = "Dream-RSI-Memory：记忆库（stats / policy / show <nodeId>）"
 
 /**
  * hooks.ts 的 handler 是按 V1 宿主回调签名声明的（`TransformMessage` 是它文件内的私有
@@ -27,7 +27,7 @@ type CommandHandler = NonNullable<ReturnType<typeof createCommandExecuteHandler>
  * 注入标记：V2 的 TextPart 没有 V1 的 `synthetic` 字段，只能放 metadata，
  * 供以后排查时认出这段文本是插件注入的。
  */
-const INJECTED_METADATA = { "dream-memory": true }
+const INJECTED_METADATA = { "dream-rsi-memory": true }
 
 /** V2 context 事件里的消息 → V1 `{info, parts}`（hooks.ts 的 handler 只认这个形状）。 */
 function toTransformMessage(
@@ -193,7 +193,7 @@ async function setup(ctx: V2Context): Promise<Cleanup | void> {
  * 1.x 与 2.x 共用同一套 store / tools / hooks，数据目录也共用。
  */
 const plugin = {
-    id: "dream-memory",
+    id: "dream-rsi-memory",
     setup,
     server: createV1Hooks,
 } satisfies V2Plugin & { server: Plugin }
