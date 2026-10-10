@@ -148,3 +148,43 @@ export function stripJsonc(source: string): string {
     }
     return out.replace(/,(\s*[}\]])/g, "$1")
 }
+
+/** FNV-1a 32-bit hash（无符号），用于把 projectId/createdAt/runId 映射成 RNG 种子。 */
+export function fnv1a32(input: string): number {
+    let hash = 0x811c9dc5
+    for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i)
+        hash = Math.imul(hash, 0x01000193)
+    }
+    return hash >>> 0
+}
+
+/** mulberry32：~5 行的可复现 PRNG（输出 0..1）。 */
+export function mulberry32(seed: number): () => number {
+    let a = seed >>> 0
+    return () => {
+        a = (a + 0x6d2b79f5) >>> 0
+        let t = a
+        t = Math.imul(t ^ (t >>> 15), t | 1)
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+}
+
+/** 整数语义的参数（播种/微扰后取整，保持记录整洁）。 */
+const INTEGER_PARAMS = new Set<keyof RecallParams>(["recencyHalfLife", "maxRecall"])
+
+/**
+ * 对参数组做 seeded 的 ±frac 相对扰动（每参数乘 `1 + (rng()*2-1)*frac`），
+ * 随后 clampParams 收边界、整数参数 round。播种（P1 建库）与启发式变体的
+ * 每次运行微扰共用此函数。
+ */
+export function perturbParams(base: RecallParams, rng: () => number, frac = 0.2): RecallParams {
+    const out = { ...base }
+    for (const key of Object.keys(PARAM_CLAMPS) as (keyof RecallParams)[]) {
+        out[key] = base[key] * (1 + (rng() * 2 - 1) * frac)
+    }
+    const clamped = clampParams(out)
+    for (const key of INTEGER_PARAMS) clamped[key] = Math.round(clamped[key])
+    return clamped
+}

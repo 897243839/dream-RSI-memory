@@ -56,7 +56,7 @@ export class MetaLlm {
             // opencode 2.x 的 session.prompt 没有 model 字段，模型只能在建会话时确定
             // （v2-compat 会把这里的 {providerID, modelID} 转成 ModelRef {providerID, id}）。
             const created = await clientAny.session.create({
-                body: { title: "dream-memory-mutate", model: this.modelField() },
+                body: { title: "dream-rsi-memory-mutate", model: this.modelField() },
                 query: { directory: this.directory },
             })
             return created?.data?.id ?? null

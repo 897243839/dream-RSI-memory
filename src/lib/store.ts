@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { dirname, join } from "node:path"
 import type { Logger } from "./logger.js"
-import { clampParams, dedupe, isRootPath, nowIso, normalizeProjectPath } from "./utils.js"
+import { clampParams, dedupe, fnv1a32, isRootPath, mulberry32, nowIso, normalizeProjectPath, perturbParams } from "./utils.js"
+import { appendQueryLog, readQueryLog, type QueryTrigger } from "./querylog.js"
 import {
     DEFAULT_PARAMS,
     type CommitInput,
@@ -13,6 +14,7 @@ import {
     type Outcome,
     type PolicyRecord,
     type RecallParams,
+    type ReplayOptions,
 } from "./types.js"
 import {
     FAILURE_SIM_THRESHOLD,
@@ -104,7 +106,13 @@ function sessionKeyOf(node: NodeRecord): string {
     return node.sessionId || "unknown"
 }
 
-function makePolicy(policyId: string, params: RecallParams, dreamRound: number, parent?: string): PolicyRecord {
+function makePolicy(
+    policyId: string,
+    params: RecallParams,
+    dreamRound: number,
+    parent?: string,
+    source?: PolicyRecord["source"],
+): PolicyRecord {
     return {
         policyId,
         code: "params",
@@ -113,7 +121,46 @@ function makePolicy(policyId: string, params: RecallParams, dreamRound: number, 
         parentPolicyId: parent,
         dreamRound,
         createdAt: nowIso(),
+        source,
     }
+}
+
+/** 建库/重建时的加载选项（P0/P1/P2：三阶段阈值无关，只带播种与日志配置）。 */
+export interface StoreLoadOptions {
+    /** 播种候选组数（默认 5）。 */
+    seedCount?: number
+    /** 固定 RNG 种子（缺省 = fnv1a(projectId + createdAt)，写进 PolicyRecord.seed 可复现）。 */
+    seed?: number
+    /** querylog.jsonl 上限（默认 1000）。 */
+    queryLogMax?: number
+}
+
+/**
+ * P1 播种：p-default 之外生成 seedCount 组对 DEFAULT_PARAMS 做 seeded ±20% 扰动的
+ * 候选策略（isActive:false，不激活）。种子 = config.seed ?? fnv1a32(projectId+createdAt)，
+ * 并写进每条记录的 seed 字段保证可复现。
+ */
+function seedPolicies(projectId: string, createdAt: string, opts: StoreLoadOptions): PolicyRecord[] {
+    const count = Math.max(0, Math.floor(opts.seedCount ?? 5))
+    if (count === 0) return []
+    const usedSeed = opts.seed ?? fnv1a32(projectId + createdAt)
+    const rng = mulberry32(usedSeed)
+    const out: PolicyRecord[] = []
+    for (let i = 1; i <= count; i++) {
+        const params = perturbParams(DEFAULT_PARAMS, rng)
+        const policy = makePolicy(`p-seed-${i}`, params, 0, undefined, "seed")
+        policy.seed = usedSeed
+        out.push(policy)
+    }
+    return out
+}
+
+/** 建库用的初始策略组：p-default（激活）+ 播种候选（不激活）。 */
+function initialPolicies(projectId: string, createdAt: string, opts: StoreLoadOptions): Record<string, PolicyRecord> {
+    const defaultPolicy = makePolicy("p-default", DEFAULT_PARAMS, 0, undefined, "default")
+    const map: Record<string, PolicyRecord> = { [defaultPolicy.policyId]: { ...defaultPolicy, isActive: true } }
+    for (const seedPolicy of seedPolicies(projectId, createdAt, opts)) map[seedPolicy.policyId] = seedPolicy
+    return map
 }
 
 function bm25Normalized(bm25: number): number {
@@ -139,6 +186,7 @@ export class MemoryStore {
         private readonly indexFile: string,
         sessionsDir: string,
         private readonly logger: Logger,
+        private readonly queryLogMax: number = 1000,
     ) {
         this.sessionsDir = sessionsDir
         for (const node of Object.values(data.nodes)) this.appendToSession(node)
@@ -160,6 +208,7 @@ export class MemoryStore {
         projectId: string,
         rootPath: string,
         logger: Logger,
+        opts: StoreLoadOptions,
     ): Promise<StoreData | null> {
         try {
             const files = await fs.readdir(sessionsDir).catch(() => [] as string[])
@@ -177,17 +226,17 @@ export class MemoryStore {
             }
             if (allNodes.length === 0) return null
 
-            const defaultPolicy = makePolicy("p-default", DEFAULT_PARAMS, 0)
+            const createdAt = nowIso()
             const data: StoreData = {
                 version: 1,
                 projectId,
                 rootPath,
-                createdAt: nowIso(),
+                createdAt,
                 nextTurnIndex: 0,
                 nodes: {},
                 order: [],
-                policies: { [defaultPolicy.policyId]: { ...defaultPolicy, isActive: true } },
-                activePolicyId: defaultPolicy.policyId,
+                policies: initialPolicies(projectId, createdAt, opts),
+                activePolicyId: "p-default",
                 dreamRuns: {},
             }
             for (const node of allNodes) {
@@ -204,7 +253,13 @@ export class MemoryStore {
         }
     }
 
-    static async load(projectId: string, rootPath: string, dataDir: string, logger: Logger): Promise<MemoryStore> {
+    static async load(
+        projectId: string,
+        rootPath: string,
+        dataDir: string,
+        logger: Logger,
+        opts: StoreLoadOptions = {},
+    ): Promise<MemoryStore> {
         const dir = join(dataDir, projectId)
         const indexFile = join(dir, "index.json")
         const sessionsDir = join(dir, SESSION_DIR)
@@ -263,22 +318,22 @@ export class MemoryStore {
 
         // Rebuild from session files if index.json is lost/corrupted.
         if (data === null) {
-            data = await MemoryStore.rebuildFromSessions(sessionsDir, projectId, rootPath, logger)
+            data = await MemoryStore.rebuildFromSessions(sessionsDir, projectId, rootPath, logger, opts)
             if (data) migrated = true // trigger persist to write a correct index.json
         }
 
         if (data === null) {
-            const defaultPolicy = makePolicy("p-default", DEFAULT_PARAMS, 0)
+            const createdAt = nowIso()
             data = {
                 version: 1,
                 projectId,
                 rootPath,
-                createdAt: nowIso(),
+                createdAt,
                 nextTurnIndex: 0,
                 nodes: {},
                 order: [],
-                policies: { [defaultPolicy.policyId]: { ...defaultPolicy, isActive: true } },
-                activePolicyId: defaultPolicy.policyId,
+                policies: initialPolicies(projectId, createdAt, opts),
+                activePolicyId: "p-default",
                 dreamRuns: {},
             }
         }
@@ -300,7 +355,7 @@ export class MemoryStore {
             migrated = true
         }
 
-        const store = new MemoryStore(data, dir, indexFile, sessionsDir, logger)
+        const store = new MemoryStore(data, dir, indexFile, sessionsDir, logger, opts.queryLogMax ?? 1000)
         if (data.order.length === 0 || migrated) {
             // Fresh install or legacy conversion: materialize the v2 layout.
             for (const key of store.sessionNodes.keys()) store.dirtySessions.add(key)
@@ -434,10 +489,15 @@ export class MemoryStore {
         return latest
     }
 
-    patchPolicyMeta(policyId: string, meta: { replayAtCreation?: { train: number; valid: number | null } }): void {
+    patchPolicyMeta(
+        policyId: string,
+        meta: { replayAtCreation?: { train: number; valid: number | null }; provisional?: boolean },
+    ): void {
         const policy = this.data.policies[policyId]
         if (!policy) return
         if (meta.replayAtCreation) policy.replayAtCreation = meta.replayAtCreation
+        if (meta.provisional === true) policy.provisional = true
+        if (meta.provisional === false) delete policy.provisional
         this.indexDirty = true
         void this.persist()
     }
@@ -451,7 +511,7 @@ export class MemoryStore {
             return (
                 `在线评估退化：${policyId} 当选时 train=${policy.replayAtCreation.train.toFixed(3)}，` +
                 `当前 ${currentTrain.toFixed(3)}（差值超 ${gate.toFixed(3)}）。` +
-                (parent ? `建议回滚：dream_memory_policy ${parent}` : "建议回滚到默认参数。")
+                (parent ? `建议回滚：dream_rsi_memory_policy ${parent}` : "建议回滚到默认参数。")
             )
         }
         return ""
@@ -479,7 +539,7 @@ export class MemoryStore {
     }
 
     /** Lightweight stats for the menu injection, with a 60s replay cache. */
-    menuStats(opts: { trainRatio: number; weights: MemoryConfig["replayWeights"] }): {
+    menuStats(opts: ReplayOptions): {
         nodeCount: number
         policyId: string
         replayTrain?: number
@@ -556,12 +616,63 @@ export class MemoryStore {
         return results.slice(0, limit)
     }
 
-    search(query: string, files: string[], opts: { limit?: number; minScore?: number; params?: RecallParams } = {}): HitResult[] {
+    search(
+        query: string,
+        files: string[],
+        opts: { limit?: number; minScore?: number; params?: RecallParams; log?: { trigger: QueryTrigger; turnIndex?: number | null } } = {},
+    ): HitResult[] {
         const nodes = this.sortedNodes()
-        if (nodes.length === 0) return []
         const nowTurn = this.data.nextTurnIndex - 1
         const params = opts.params ?? this.activePolicy().params
-        return this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit, minScore: opts.minScore })
+        const results = nodes.length === 0 ? [] : this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit, minScore: opts.minScore })
+        // P2：只有显式传 log 的用户面出口（tool/command/teaser）落盘；
+        // status/menuStats 的 replay 打分与 dream 候选评估走 scoreCandidates，不经过这里。
+        if (opts.log) {
+            const ok = appendQueryLog(
+                this.dir,
+                {
+                    ts: nowIso(),
+                    turnIndex: opts.log.turnIndex ?? this.currentTurnIndex(),
+                    query,
+                    policyId: this.data.activePolicyId,
+                    trigger: opts.log.trigger,
+                    results: results.map((h, i) => ({ nodeId: h.node.nodeId, rank: i + 1, score: h.score })),
+                },
+                this.queryLogMax,
+            )
+            if (!ok) this.logger.debug("querylog append failed", { dir: this.dir })
+        }
+        return results
+    }
+
+    /** 最后一个已 commit 节点的 turnIndex；空库记 null。 */
+    currentTurnIndex(): number | null {
+        return this.data.order.length === 0 ? null : this.data.nextTurnIndex - 1
+    }
+
+    /** 项目数据目录（index.json 所在目录），querylog.jsonl 也在这里。 */
+    getProjectDir(): string {
+        return this.dir
+    }
+
+    /**
+     * 在线战绩聚合（P2，仅供 status 展示与二期 P3a 消费；本版不做任何自动调参）：
+     * - served：queryLog 中该策略服务过的查询数（按 policyId 聚合）；
+     * - success/failed/partial：sessions 节点中 `policyVersion === policyId`
+     *   （commit 时服务它的策略）的 outcome 计数。
+     */
+    onlineStats(policyId: string): { served: number; success: number; failed: number; partial: number } {
+        let served = 0
+        for (const entry of readQueryLog(this.dir)) {
+            if (entry.policyId === policyId) served++
+        }
+        const counts = { success: 0, failed: 0, partial: 0 }
+        for (const id of this.data.order) {
+            const node = this.data.nodes[id]
+            if (!node || node.policyVersion !== policyId) continue
+            if (node.outcome in counts) counts[node.outcome as keyof typeof counts]++
+        }
+        return { served, ...counts }
     }
 
     private buildIndex(): IndexFile {

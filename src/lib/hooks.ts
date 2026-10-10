@@ -1,12 +1,13 @@
 import type { Part, UserMessage } from "@opencode-ai/sdk"
 import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
-import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE } from "./dream-nudge.js"
+import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE, DREAM_NUDGE_TRIAL } from "./dream-nudge.js"
 import type { Logger } from "./logger.js"
 import type { GateRegistry } from "./menu.js"
 import type { MetaLlm } from "./meta-llm.js"
 import { renderMenuText } from "./prompts.js"
 import { dreamHelpText, nodeDetailText, policyListText, replayOptsOf, statusText } from "./report.js"
+import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
 import type { MemoryConfig, Outcome } from "./types.js"
 import { normalizeFiles, truncate } from "./utils.js"
@@ -48,15 +49,15 @@ function lastUserIndex(messages: TransformMessage[]): number {
 
 function systemHelp(): string {
     return [
-        "[dream-memory] 长期记忆工具（按需调用，非每回合必须）",
-        "开工前若怀疑过去做过类似任务，可用 dream_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
+        "[dream-rsi-memory] 长期记忆工具（按需调用，非每回合必须）",
+        "开工前若怀疑过去做过类似任务，可用 dream_rsi_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_rsi_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_rsi_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
     ].join("\n")
 }
 
 export function createSystemPromptHandler(config: MemoryConfig): ((input: unknown, output: { system: string[] }) => Promise<void>) | undefined {
     if (!config.enabled || !config.menu.enabled) return undefined
     return async (_input, output) => {
-        const marker = "[dream-memory]"
+        const marker = "[dream-rsi-memory]"
         if (output.system.some((s) => s.includes(marker))) return
         output.system.push(systemHelp())
     }
@@ -65,14 +66,14 @@ export function createSystemPromptHandler(config: MemoryConfig): ((input: unknow
 /**
  * Lightweight teaser: search the last user message against the whole store and,
  * if the top hit comes from a *different* session, emit a one-line hint so the
- * model sees the promised "命中历史" trigger and follows up with dream_memory_search.
+ * model sees the promised "命中历史" trigger and follows up with dream_rsi_memory_search.
  * Same-session nodes are skipped: reminding the model of its own recent work is noise.
  */
 function teaserFor(store: MemoryStore, queryText: string, files: string[], sessionID: string): string {
     const query = queryText.trim()
     if (!query || store.count() === 0) return ""
     const hit = store
-        .search(query, files, { limit: 5 })
+        .search(query, files, { limit: 5, log: { trigger: "teaser" } })
         .find((h) => h.node.sessionId !== sessionID)
     if (!hit) return ""
     const tag = hit.node.outcome === "failed" ? "（踩坑）" : hit.node.outcome === "success" ? "（成功）" : ""
@@ -99,6 +100,7 @@ export function createMessagesTransformHandler(
 
         const stats = store.menuStats(replayOptsOf(config))
         if (!gate.shouldInject(sessionID, stats.nodeCount, config.menu)) return
+        const stage = getStage(stats.nodeCount, config.dream)
 
         const lastMessage = messages[idx]
         const queryText = (lastMessage.parts ?? [])
@@ -123,6 +125,8 @@ export function createMessagesTransformHandler(
             nodeCount: stats.nodeCount,
             policyId: stats.policyId,
             replayTrain: stats.replayTrain,
+            stage,
+            minNodesProvisional: config.dream.minNodesProvisional,
             minNodes: config.dream.minNodes,
             maxTokensHint: config.menu.maxTokensHint,
             teaser,
@@ -141,21 +145,27 @@ export function createMessagesTransformHandler(
         messages[idx].parts.push(part)
         gate.markInjected(sessionID, stats.nodeCount)
 
-        // Dream nudge: inject when conditions are met
-        const ready = stats.nodeCount >= config.dream.minNodes
-        const stale = ready && (turnsSinceDream ?? 0) >= 10
-        if (ready) {
-            let nudge = DREAM_NUDGE_NODE_THRESHOLD
-            if (stale) nudge = DREAM_NUDGE_STALE
-            const nudgePart: Part = {
-                id: "dream-nudge-" + Date.now().toString(36),
-                sessionID,
-                messageID: userInfo.id,
-                type: "text",
-                text: nudge,
-                synthetic: true,
+        // Dream nudge（P0 三阶段）：F 期催进化；M 期另注入低频试调提示；
+        // S 期不注入催促；dream.enabled=false 全部不注入（与菜单同一 GateRegistry 节流）。
+        if (config.dream.enabled) {
+            let nudge = ""
+            if (stage === "F") {
+                const stale = (turnsSinceDream ?? 0) >= 10
+                nudge = stale ? DREAM_NUDGE_STALE : DREAM_NUDGE_NODE_THRESHOLD
+            } else if (stage === "M") {
+                nudge = DREAM_NUDGE_TRIAL
             }
-            messages[idx].parts.push(nudgePart)
+            if (nudge) {
+                const nudgePart: Part = {
+                    id: "dream-nudge-" + Date.now().toString(36),
+                    sessionID,
+                    messageID: userInfo.id,
+                    type: "text",
+                    text: nudge,
+                    synthetic: true,
+                }
+                messages[idx].parts.push(nudgePart)
+            }
         }
     }
 }
@@ -200,24 +210,24 @@ export function createCommandExecuteHandler(
                 if (sub === "stats") text = statusText(store, config)
                 else if (sub === "policy") text = policyListText(store)
                 else if (sub === "show" && argv[1]) text = nodeDetailText(store, argv[1])
-                else if (sub === "show") text = "[dream-memory] 用法：/memory show <nodeId>"
+                else if (sub === "show") text = "[dream-rsi-memory] 用法：/memory show <nodeId>"
                 else if (sub === "search") text = searchCommandText(store, argv.slice(1))
                 else text = dreamHelpText()
             }
         } catch (error) {
-            text = "[dream-memory] 命令执行失败：" + String(error)
+            text = "[dream-rsi-memory] 命令执行失败：" + String(error)
         }
         await sendIgnoredMessage(client, sessionID, text, deps.logger)
     }
 }
 
 function searchCommandText(store: MemoryStore, argTokens: string[]): string {
-    if (argTokens.length === 0) return "[dream-memory] 用法：/dream search <描述检索意图的关键词>"
+    if (argTokens.length === 0) return "[dream-rsi-memory] 用法：/dream search <描述检索意图的关键词>"
     const query = argTokens.join(" ")
     const policy = store.activePolicy()
     const limit = Math.min(policy.params.maxRecall, 10)
-    const hits = store.search(query, [], { limit })
-    const lines = [`[dream-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
+    const hits = store.search(query, [], { limit, log: { trigger: "command" } })
+    const lines = [`[dream-rsi-memory] 检索得 ${hits.length} 条历史经验（策略 ${policy.policyId}）：`]
     for (const hit of hits) {
         lines.push(
             `• ${hit.node.nodeId} (turn ${hit.node.turnIndex}, ${hit.node.outcome}, score ${hit.score.toFixed(3)})` +
@@ -230,12 +240,12 @@ function searchCommandText(store: MemoryStore, argTokens: string[]): string {
 }
 
 function commitCommandText(store: MemoryStore, collector: FileCollector, sessionID: string, argTokens: string[]): string {
-    if (argTokens.length === 0) return "[dream-memory] 用法：/dream commit <结论摘要，可含 成功|失败|部分 与仓库内文件路径>"
+    if (argTokens.length === 0) return "[dream-rsi-memory] 用法：/dream commit <结论摘要，可含 成功|失败|部分 与仓库内文件路径>"
 const joined = argTokens.join(" ")
     const result = parseCommitTokens(joined)
     const outcome: Outcome = result.outcome
     const summary = result.summary
-    if (!summary) return "[dream-memory] 用法：/dream commit <结论摘要>"
+    if (!summary) return "[dream-rsi-memory] 用法：/dream commit <结论摘要>"
     const touched = normalizeFiles(store.getRootPath(), collector.take(sessionID))
     const node = store.commit({
         summary: truncate(summary, 60),
@@ -245,7 +255,7 @@ const joined = argTokens.join(" ")
         agentName: "command",
     })
     const label = outcome === "success" ? "成功" : outcome === "failed" ? "失败" : "部分完成"
-    return `[dream-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${label}）` + (touched.length ? `，关联 ${touched.length} 个文件` : "") + `\nsummary：${node.summary}`
+    return `[dream-rsi-memory] 已记录节点 ${node.nodeId}（turn ${node.turnIndex}，${label}）` + (touched.length ? `，关联 ${touched.length} 个文件` : "") + `\nsummary：${node.summary}`
 }
 
 /** Pull an outcome keyword (成功|失败|部分|success|failed|partial) out of a free-form commit line. */

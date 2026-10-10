@@ -13,12 +13,12 @@ function loadEntry() {
 }
 
 const EXPECTED_TOOLS = [
-    "dream_memory_commit",
-    "dream_memory_search",
-    "dream_memory_node",
-    "dream_memory_status",
-    "dream_memory_policy",
-    "dream_memory_dream",
+    "dream_rsi_memory_commit",
+    "dream_rsi_memory_search",
+    "dream_rsi_memory_node",
+    "dream_rsi_memory_status",
+    "dream_rsi_memory_policy",
+    "dream_rsi_memory_dream",
 ]
 
 /**
@@ -72,7 +72,7 @@ function fakeHost(directory) {
                     get: () => undefined,
                     remove: () => {},
                     update: () => {},
-                    namespace: "dream-memory",
+                    namespace: "dream-rsi-memory",
                 })
                 return () => {}
             },
@@ -117,7 +117,7 @@ function projectWithConfig(overrides = {}) {
     const data = mkdtempSync(join(tmpdir(), "dm-entry-data-"))
     mkdirSync(join(project, ".opencode"))
     writeFileSync(
-        join(project, ".opencode", "dream-memory.jsonc"),
+        join(project, ".opencode", "dream-rsi-memory.jsonc"),
         JSON.stringify({ enabled: true, dataDir: data, distill: { enabled: false }, ...overrides }),
     )
     return { project, data, dispose: () => {
@@ -130,7 +130,7 @@ test("plugin entry exports a dual V1+V2 module (id + setup + server)", async () 
     const mod = await loadEntry()
 
     assert.equal(typeof mod.default, "object")
-    assert.equal(mod.default.id, "dream-memory")
+    assert.equal(mod.default.id, "dream-rsi-memory")
     assert.equal(typeof mod.default.setup, "function", "V2 入口必须导出 setup")
     assert.equal(typeof mod.default.server, "function", "V1 入口必须导出 server（billion-context 同构）")
     assert.ok(!("tui" in mod.default), "should not declare a tui surface")
@@ -176,17 +176,17 @@ test("a registered tool returns V2 { content }", async () => {
     try {
         const cleanup = await mod.default.setup(ctx)
 
-        const status = state.tools.find((t) => t.name === "dream_memory_status")
+        const status = state.tools.find((t) => t.name === "dream_rsi_memory_status")
         const result = await status.execute({}, toolCallCtx())
         assert.equal(typeof result.content, "string", "V2 工具结果走 { content }")
-        assert.ok(result.content.includes("[dream-memory]"), "status 文本应带插件前缀")
+        assert.ok(result.content.includes("[dream-rsi-memory]"), "status 文本应带插件前缀")
 
         // commit 走一遍兼容层的 session.context → session.messages 映射
-        const commit = state.tools.find((t) => t.name === "dream_memory_commit")
+        const commit = state.tools.find((t) => t.name === "dream_rsi_memory_commit")
         const committed = await commit.execute({ summary: "验证入口", outcome: "success" }, toolCallCtx())
         assert.ok(committed.content.includes("已记录节点"), `commit 输出：${committed.content}`)
 
-        const search = state.tools.find((t) => t.name === "dream_memory_search")
+        const search = state.tools.find((t) => t.name === "dream_rsi_memory_search")
         const found = await search.execute({ query: "验证入口" }, toolCallCtx())
         assert.ok(found.content.includes("检索得 1 条"), `search 应命中刚记录的节点：${found.content}`)
 
@@ -207,7 +207,7 @@ test("tool.execute.before feeds touched files into the next commit", async () =>
         await before.cb({ tool: "edit", sessionID: "sess-1", messageID: "m1", id: "call-1", input: { filePath: "src/touched.ts" } })
         await new Promise((resolve) => setImmediate(resolve))
 
-        const commit = state.tools.find((t) => t.name === "dream_memory_commit")
+        const commit = state.tools.find((t) => t.name === "dream_rsi_memory_commit")
         const result = await commit.execute({ summary: "带文件的提交", outcome: "success" }, toolCallCtx())
         assert.ok(result.content.includes("关联 1 个文件"), `collector 收集到的文件要进节点：${result.content}`)
 
@@ -238,12 +238,12 @@ test("session.context hook injects system help and the menu", async () => {
         const first = turn("第一轮")
         await contextHook(first)
         assert.ok(
-            first.system.some((part) => part.text.includes("[dream-memory] 长期记忆工具")),
+            first.system.some((part) => part.text.includes("[dream-rsi-memory] 长期记忆工具")),
             "system 帮助文案必须注入",
         )
         assert.equal(first.messages[0].content.length, 1, "冷启动不应注入菜单")
 
-        const commit = state.tools.find((t) => t.name === "dream_memory_commit")
+        const commit = state.tools.find((t) => t.name === "dream_rsi_memory_commit")
         await commit.execute({ summary: "第一轮的结论", outcome: "success" }, toolCallCtx())
 
         const second = turn("第二轮")
@@ -251,7 +251,7 @@ test("session.context hook injects system help and the menu", async () => {
         assert.ok(second.messages[0].content.length > 1, "冷却期满 + 新节点 → 菜单必须注入最后一条 user 消息")
         const injected = second.messages[0].content.at(-1)
         assert.equal(injected.type, "text")
-        assert.ok(injected.text.includes("[dream-memory]"), "注入的应该是 dream 菜单")
+        assert.ok(injected.text.includes("[dream-rsi-memory]"), "注入的应该是 dream 菜单")
 
         await cleanup()
     } finally {
@@ -272,7 +272,7 @@ test("commands deliver output through session.synthetic({ resume: false })", asy
         assert.equal(state.synthetic.length, 1, "命令输出必须走 synthetic")
         assert.equal(state.synthetic[0].resume, false, "resume:false 才等价 V1 的 noReply")
         assert.equal(state.synthetic[0].sessionID, "sess-1")
-        assert.ok(state.synthetic[0].text.includes("[dream-memory]"), `命令输出：${state.synthetic[0].text}`)
+        assert.ok(state.synthetic[0].text.includes("[dream-rsi-memory]"), `命令输出：${state.synthetic[0].text}`)
 
         await memory.execute({ sessionID: "sess-1", prompt: "search 关键词不存在", delivery: "steer" })
         assert.equal(state.synthetic.length, 2)
@@ -292,7 +292,7 @@ test("setup still registers tools when the project directory is a root (desktop 
     const configDir = mkdtempSync(join(tmpdir(), "dm-entry-cfg-"))
     const previous = process.env.OPENCODE_CONFIG_DIR
     writeFileSync(
-        join(configDir, "dream-memory.json"),
+        join(configDir, "dream-rsi-memory.json"),
         JSON.stringify({ enabled: true, dataDir: data, distill: { enabled: false } }),
     )
     process.env.OPENCODE_CONFIG_DIR = configDir
