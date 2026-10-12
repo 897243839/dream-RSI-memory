@@ -1,5 +1,6 @@
 import { runReplay } from "./replay.js"
 import { getStage, stageName } from "./stages.js"
+import { isExperience } from "./strategy.js"
 import type { MemoryStore } from "./store.js"
 import type { MemoryConfig } from "./types.js"
 import { truncate } from "./utils.js"
@@ -18,6 +19,7 @@ export function replayOptsOf(config: MemoryConfig): { trainRatio: number; weight
 export function nodeStatsText(store: MemoryStore): string {
     const counts = { success: 0, failed: 0, partial: 0 }
     for (const node of store.sortedNodes()) {
+        if (!isExperience(node)) continue // 策略库节点不计入经验统计（§3.5）
         if (node.outcome in counts) counts[node.outcome as keyof typeof counts]++
     }
     return `节点 ${store.count()} 个（success ${counts.success} / failed ${counts.failed} / partial ${counts.partial}）`
@@ -63,6 +65,20 @@ export function statusText(store: MemoryStore, config: MemoryConfig): string {
             `  在线战绩 ${p.policyId}：服务查询 ${s.served}，其下节点 成功 ${s.success} / 失败 ${s.failed} / 部分 ${s.partial}`,
         )
     }
+    // 策略库概览（§5.3 status 末尾追加；一次调用取全量，不循环查 store）
+    const overview = store.strategyOverview()
+    lines.push(`  策略库：set ${overview.setCount} 个 / alt ${overview.altCount} 个`)
+    lines.push(
+        `  当前分支：${overview.chosen ? `${overview.chosen.problem} → ${overview.chosen.altName}` : "尚无选定分支"}`,
+    )
+    if (overview.lastAdvice) {
+        lines.push(`  最近建议：${overview.lastAdvice.recommendedAltName}（margin ${overview.lastAdvice.margin.toFixed(3)}）`)
+    }
+    if (overview.lastAutoSwitch && overview.lastAutoSwitch.autoSwitched) {
+        lines.push(
+            `  最近自动切换：${overview.lastAutoSwitch.recommendedAltName}（${overview.lastAutoSwitch.createdAt}）`,
+        )
+    }
     return lines.join("\n")
 }
 
@@ -79,6 +95,32 @@ export function policyListText(store: MemoryStore): string {
 export function nodeDetailText(store: MemoryStore, nodeId: string): string {
     const node = store.getNode(nodeId)
     if (!node) return `[dream-rsi-memory] 节点 ${nodeId} 不存在。`
+    if (node.type === "strategy_set") {
+        const chosenName = node.chosenAltId ? (store.getNode(node.chosenAltId)?.name ?? node.chosenAltId) : null
+        const lines: (string | null)[] = [
+            `[dream-rsi-memory] 节点 ${node.nodeId}（strategy_set 策略集）`,
+            `  turn ${node.turnIndex} · agent=${node.agentName} · session ${node.sessionId.slice(0, 8)}`,
+            `  problem：${node.problem ?? "—"}`,
+            `  候选数：${(node.altIds ?? []).length}`,
+            `  当前分支：${chosenName ?? "尚无选定分支"}`,
+            node.files.length ? `  files：${node.files.join(", ")}` : null,
+        ]
+        return lines.filter((l): l is string => !!l).join("\n")
+    }
+    if (node.type === "strategy_alt") {
+        const lines: (string | null)[] = [
+            `[dream-rsi-memory] 节点 ${node.nodeId}（strategy_alt 策略候选）`,
+            `  turn ${node.turnIndex} · agent=${node.agentName} · session ${node.sessionId.slice(0, 8)}`,
+            `  setId：${node.setId ?? "—"}`,
+            `  name：${node.name ?? "—"}`,
+            `  approach：${node.approach ?? "—"}`,
+            `  tradeoffs：${node.tradeoffs ?? "—"}`,
+            `  estimatedRisk：${node.estimatedRisk ?? "—"}`,
+            `  status：${node.status ?? "—"}`,
+            node.files.length ? `  files：${node.files.join(", ")}` : null,
+        ]
+        return lines.filter((l): l is string => !!l).join("\n")
+    }
     const lines: (string | null)[] = [
         `[dream-rsi-memory] 节点 ${node.nodeId}`,
         `  turn ${node.turnIndex} · ${node.outcome} · agent=${node.agentName} · session ${node.sessionId.slice(0, 8)}`,

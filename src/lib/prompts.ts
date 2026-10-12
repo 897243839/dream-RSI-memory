@@ -14,8 +14,11 @@ export function renderSystemHelpText(): string {
         "1. 本回合要动手的任务，你怀疑过去（任何项目/任何 session）做过类似的事——先 dream_rsi_memory_search 检索历史经验，把命中的经验喂给自己再开工。",
         "2. 回合中你得出了“未来愿意复用”的结论，或踩了一个根因清楚的坑——用 dream_rsi_memory_commit 记一条，让未来的自己避开。",
         "3. 记忆库节点足够多（≥20）且近期检索质量不佳——可 dream_rsi_memory_dream 让蒸馏/检索策略自我进化。",
+        // 策略库扩展注入（设计方案 §5.4 的载体，架构边界见 §0.2）：以下两条为设计决策工作流与自动切换感知。
+        "4. 你面临需要多路尝试的设计决策（技术选型/架构取舍/方案对比），且检索确认策略库没有该问题的候选——按「设计决策工作流」：开 sub-agent 并行探索 ≥20 个可行方向（每个含 approach/tradeoffs/estimatedRisk）→ 你的判断筛出约 5 个可靠的 → question 工具与用户交互确认选哪个 → dream_rsi_memory_strategy_propose 入库候选 → dream_rsi_memory_strategy_pick 定为当前分支。",
+        "5. 当你收到策略库自动切换通知时——后续工作按新分支的 approach 继续；若确认切错，可 dream_rsi_memory_strategy_pick 手动切回。",
         "",
-        "WHEN-NOT（命中任一即不参与））：",
+        "WHEN-NOT（命中任一即不参与）：",
         "1. 纯闲聊、寒暄、没有动手没有结论的回合。",
         "2. 你检索过且记忆库确实没有相关命中（空结果就是答案——保持安静）。",
         "3. 教程/闲聊专用/内部 agent（title/summary/compaction）的回合。",
@@ -67,6 +70,7 @@ export function renderMenuText(input: MenuRenderInput): string {
         "- dream_rsi_memory_search 检索历史经验",
         "- dream_rsi_memory_commit 沉淀一条可复用结论",
         "- dream_rsi_memory_dream 自我进化检索策略",
+        "- dream_rsi_memory_strategy_propose 设计决策候选入库 / strategy_pick 切换分支",
         `（菜单注入上限 ${maxTokensHint} tokens；此条为系统提示，不占用回复正文）`,
     ]
         .filter(Boolean)

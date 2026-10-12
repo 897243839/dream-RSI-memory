@@ -4,17 +4,19 @@ import { dirname, join } from "node:path"
 import type { Logger } from "./logger.js"
 import { clampParams, dedupe, fnv1a32, isRootPath, mulberry32, nowIso, normalizeProjectPath, perturbParams } from "./utils.js"
 import { appendQueryLog, readQueryLog, type QueryTrigger } from "./querylog.js"
+import { initialPolicies, makePolicy, type PolicyRecord, type StoreLoadOptions } from "./policy.js"
 import {
     DEFAULT_PARAMS,
+    type AdviceRecord,
     type CommitInput,
     type DreamRunRecord,
     type HitResult,
     type MemoryConfig,
     type NodeRecord,
     type Outcome,
-    type PolicyRecord,
     type RecallParams,
     type ReplayOptions,
+    type StrategyAltNode,
 } from "./types.js"
 import {
     FAILURE_SIM_THRESHOLD,
@@ -29,6 +31,23 @@ import {
     tokenizeText,
 } from "./scoring.js"
 import { runReplay } from "./replay.js"
+import {
+    ADVICE_LOG_MAX,
+    buildChildIndex,
+    descendantsOf,
+    isExperience,
+    isStrategyAlt,
+    isStrategySet,
+    isValidAdvice,
+    parseAdviceLog,
+    resolveActiveAlt as resolveActiveAltPure,
+    strategySetHitScore,
+    type AltCandidate,
+    type SetMeta,
+    type StrategyOverview,
+} from "./strategy.js"
+
+export type { StoreLoadOptions }
 
 interface StoreData {
     version: 1
@@ -41,6 +60,7 @@ interface StoreData {
     policies: Record<string, PolicyRecord>
     activePolicyId: string
     dreamRuns: Record<string, DreamRunRecord>
+    adviceLog: AdviceRecord[]
 }
 
 /** On-disk format v2: a small per-project index + one file per session. */
@@ -55,6 +75,8 @@ interface IndexFile {
     activePolicyId: string
     policies: Record<string, PolicyRecord>
     dreamRuns: Record<string, DreamRunRecord>
+    /** 检索建议 + 自动切换轨迹（设计方案 §8；懒补见 §2.4）。 */
+    adviceLog: AdviceRecord[]
 }
 
 interface SessionPart {
@@ -77,13 +99,21 @@ async function atomicWrite(target: string, content: string): Promise<void> {
     }
 }
 
+/** tmp 文件存活阈值：超过此龄才认定为崩溃残留（§4.7）。 */
+const STALE_TMP_MS = 60_000
+
+/** tmp 文件名的严格形态：`<target>.tmp-<pid>-<seq>` 结尾（见 `atomicWrite`）。 */
+const STALE_TMP_NAME = /\.tmp-(\d+)-\d+$/
+
 /**
- * Remove leftover `*.tmp-<pid>-<n>` files left by crashed/interrupted atomic
- * writes in the given directory. Called for every write, so any stale temp
- * from an earlier, unrelated write (e.g. an old index.json.tmp-*) is also
- * swept even when that particular target is not being written this round.
+ * 清理目录里崩溃/中断留下的 `*.tmp-<pid>-<n>`。
+ *
+ * §4.7：原实现无差别删掉目录内**所有** `.tmp-` 文件，会删掉另一个 opencode 进程正在写的
+ * 临时文件 —— 它随后 rename 时抛错，而该异常被 `writeChain` 的 catch 静默吞掉 →
+ * **静默丢一次写**（它自己就是跨进程破坏源）。现在只删「pid ≠ 本进程 且 mtime 超过
+ * `STALE_TMP_MS`」的文件；命名规则解析不出 pid 的保守不删。
  */
-async function cleanupStaleTmp(dir: string): Promise<void> {
+async function cleanupStaleTmp(dir: string, logger: Logger): Promise<void> {
     let names: string[] = []
     try {
         names = await fs.readdir(dir)
@@ -92,8 +122,25 @@ async function cleanupStaleTmp(dir: string): Promise<void> {
     }
     await Promise.all(
         names
-            .filter((name) => name.includes(".tmp-"))
-            .map((name) => fs.rm(join(dir, name), { force: true }).catch(() => {})),
+            // 必须**精确匹配** tmp 命名（`<target>.tmp-<pid>-<seq>` 结尾）。仅按 `.tmp-`
+            // 子串判别会误伤合法 session 文件：sessionId 白名单保留了 `.` 与 `-`，
+            // `abc.tmp-4242-<sha8>.json` 会解析出 pid=4242，一旦超过 60s 就被删 ——
+            // 该会话全部节点静默消失（index 不存节点，rebuild 不触发，无任何报错）。
+            .filter((name) => {
+                const match = STALE_TMP_NAME.exec(name)
+                if (!match) return false // 命名形态不符 → 保守不删
+                return Number.parseInt(match[1], 10) !== process.pid
+            })
+            .map(async (name) => {
+                const full = join(dir, name)
+                try {
+                    const stat = await fs.stat(full)
+                    if (Date.now() - stat.mtimeMs < STALE_TMP_MS) return
+                    await fs.rm(full, { force: true })
+                } catch (error) {
+                    logger.debug("stale tmp sweep skipped", { name, error: String(error) })
+                }
+            }),
     )
 }
 
@@ -104,63 +151,6 @@ function sessionFileName(sessionId: string): string {
 
 function sessionKeyOf(node: NodeRecord): string {
     return node.sessionId || "unknown"
-}
-
-function makePolicy(
-    policyId: string,
-    params: RecallParams,
-    dreamRound: number,
-    parent?: string,
-    source?: PolicyRecord["source"],
-): PolicyRecord {
-    return {
-        policyId,
-        code: "params",
-        params,
-        isActive: false,
-        parentPolicyId: parent,
-        dreamRound,
-        createdAt: nowIso(),
-        source,
-    }
-}
-
-/** 建库/重建时的加载选项（P0/P1/P2：三阶段阈值无关，只带播种与日志配置）。 */
-export interface StoreLoadOptions {
-    /** 播种候选组数（默认 5）。 */
-    seedCount?: number
-    /** 固定 RNG 种子（缺省 = fnv1a(projectId + createdAt)，写进 PolicyRecord.seed 可复现）。 */
-    seed?: number
-    /** querylog.jsonl 上限（默认 1000）。 */
-    queryLogMax?: number
-}
-
-/**
- * P1 播种：p-default 之外生成 seedCount 组对 DEFAULT_PARAMS 做 seeded ±20% 扰动的
- * 候选策略（isActive:false，不激活）。种子 = config.seed ?? fnv1a32(projectId+createdAt)，
- * 并写进每条记录的 seed 字段保证可复现。
- */
-function seedPolicies(projectId: string, createdAt: string, opts: StoreLoadOptions): PolicyRecord[] {
-    const count = Math.max(0, Math.floor(opts.seedCount ?? 5))
-    if (count === 0) return []
-    const usedSeed = opts.seed ?? fnv1a32(projectId + createdAt)
-    const rng = mulberry32(usedSeed)
-    const out: PolicyRecord[] = []
-    for (let i = 1; i <= count; i++) {
-        const params = perturbParams(DEFAULT_PARAMS, rng)
-        const policy = makePolicy(`p-seed-${i}`, params, 0, undefined, "seed")
-        policy.seed = usedSeed
-        out.push(policy)
-    }
-    return out
-}
-
-/** 建库用的初始策略组：p-default（激活）+ 播种候选（不激活）。 */
-function initialPolicies(projectId: string, createdAt: string, opts: StoreLoadOptions): Record<string, PolicyRecord> {
-    const defaultPolicy = makePolicy("p-default", DEFAULT_PARAMS, 0, undefined, "default")
-    const map: Record<string, PolicyRecord> = { [defaultPolicy.policyId]: { ...defaultPolicy, isActive: true } }
-    for (const seedPolicy of seedPolicies(projectId, createdAt, opts)) map[seedPolicy.policyId] = seedPolicy
-    return map
 }
 
 function bm25Normalized(bm25: number): number {
@@ -238,6 +228,7 @@ export class MemoryStore {
                 policies: initialPolicies(projectId, createdAt, opts),
                 activePolicyId: "p-default",
                 dreamRuns: {},
+                adviceLog: [],
             }
             for (const node of allNodes) {
                 data.nodes[node.nodeId] = node
@@ -284,6 +275,7 @@ export class MemoryStore {
                         policies: index.policies,
                         activePolicyId: index.activePolicyId,
                         dreamRuns: index.dreamRuns,
+                        adviceLog: parseAdviceLog(index.adviceLog),
                     }
                     const files = await fs.readdir(sessionsDir).catch(() => [] as string[])
                     for (const file of files) {
@@ -335,8 +327,14 @@ export class MemoryStore {
                 policies: initialPolicies(projectId, createdAt, opts),
                 activePolicyId: "p-default",
                 dreamRuns: {},
+                adviceLog: [],
             }
         }
+
+        // adviceLog 懒补 + 脏数据过滤（设计方案 §2.4 / §6.3）：统一在 4 个构造分支汇合后执行。
+        // 幂等（parseAdviceLog 自身容错），覆盖 legacy V1 迁移与 V2 读盘两条路径；
+        // **绝不**把 adviceLog 塞进 index 门条件——一条脏数据触发 rebuild 会丢掉 policies/dreamRuns。
+        data.adviceLog = parseAdviceLog(data.adviceLog)
 
         if (!data.policies[data.activePolicyId]) {
             const fallback = makePolicy(data.activePolicyId, DEFAULT_PARAMS, 0)
@@ -379,7 +377,14 @@ export class MemoryStore {
     }
 
     count(): number {
-        return this.data.order.length
+        // §3.5：只数经验节点——strategy_set/strategy_alt 混入会让节点数虚增，
+        // 提前触发 S→M→F 阶段切换（report.getStage 消费这里）。
+        let n = 0
+        for (const id of this.data.order) {
+            const node = this.data.nodes[id]
+            if (node && isExperience(node)) n++
+        }
+        return n
     }
 
     getNode(nodeId: string): NodeRecord | undefined {
@@ -396,6 +401,18 @@ export class MemoryStore {
         for (let i = this.data.order.length - 1; i >= 0; i--) {
             const node = this.data.nodes[this.data.order[i]]
             if (node.sessionId === sessionId) return node
+        }
+        return undefined
+    }
+
+    /**
+     * 本会话最近的**经验节点**（跳过 strategy_set/alt/note）。
+     * 供 `proposeStrategySet` 定 set 的缺省父：新决策的根不应挂在另一个决策的候选下。
+     */
+    private lastExperienceForSession(sessionId: string): NodeRecord | undefined {
+        const list = this.sessionNodes.get(sessionId) ?? []
+        for (let i = list.length - 1; i >= 0; i--) {
+            if (isExperience(list[i])) return list[i]
         }
         return undefined
     }
@@ -427,9 +444,16 @@ export class MemoryStore {
 
     commit(input: CommitInput): NodeRecord {
         const nodeId = "n-" + randomUUID().slice(0, 8)
-        const parentId = input.parentId ?? this.latestNodeForSession(input.sessionId)?.nodeId
+        // §4.1 挂靠优先级：显式 parentId > 本会话 active alt > 最近节点（现状不变）。
+        // 未传 parentId 且本会话已 pick 过分支时自动挂到该分支，使真实 outcome 累积到
+        // 候选子树上（Wilson 打分的数据来源）；branchId 一并继承 active alt，
+        // 否则 §2.5 的 descendantsOf 会漏掉该子树。
+        const activeAlt = input.parentId ? null : this.resolveActiveAlt(input.sessionId)
+        const parentId = input.parentId ?? activeAlt?.nodeId ?? this.latestNodeForSession(input.sessionId)?.nodeId
         const parent = parentId ? this.data.nodes[parentId] : undefined
-        const branchId = input.branchId ?? (parent ? (parent.branchId ?? parentId) : nodeId)
+        const branchId =
+            input.branchId ??
+            (activeAlt ? (activeAlt.branchId ?? activeAlt.nodeId) : parent ? (parent.branchId ?? parentId) : nodeId)
         const turnIndex = this.data.nextTurnIndex++
 
         const node: NodeRecord = {
@@ -450,6 +474,7 @@ export class MemoryStore {
         }
         if (input.score !== undefined) node.score = input.score
         if (input.autoCreated) node.autoCreated = true
+        if (input.type) node.type = input.type
 
         this.data.nodes[nodeId] = node
         this.data.order.push(nodeId)
@@ -475,6 +500,275 @@ export class MemoryStore {
         this.replayCache = null
         void this.persist()
         return node
+    }
+
+    /** 本会话「当前在执行的分支」（§4.1）：从节点推导，零新增持久化。 */
+    resolveActiveAlt(sessionId: string): NodeRecord | null {
+        if (!sessionId) return null
+        return resolveActiveAltPure(this.sessionNodes.get(sessionId) ?? [], sessionId)
+    }
+
+    /**
+     * 批量补丁（§4.5）：`pickStrategy` 一次要改 3~N 个节点，必须同步 apply 全部
+     * 后**单次** `persist()` —— 若各改各的（各自 `void persist()`），中断会留下
+     * 0 个或 2 个 `chosen`，而代码里没有唯一性校验兜底。
+     */
+    batchPatch(patches: Array<[string, Partial<NodeRecord>]>): void {
+        for (const [nodeId, patch] of patches) {
+            const node = this.data.nodes[nodeId]
+            if (!node) continue
+            const oldKey = sessionKeyOf(node)
+            Object.assign(node, patch)
+            if (sessionKeyOf(node) !== oldKey) {
+                this.sessionNodes.clear()
+                for (const n of Object.values(this.data.nodes)) this.appendToSession(n)
+                this.dirtySessions.add(oldKey)
+            }
+            this.dirtySessions.add(sessionKeyOf(node))
+        }
+        this.replayCache = null
+        void this.persist()
+    }
+
+    /**
+     * 派生的策略集元数据（§2.3「推导而非存储」）：**不落 index.json**，每次现算。
+     *
+     * 为什么不缓存：`patchNode` 不置 `indexDirty`（状态更新会静默丢），且
+     * `rebuildFromSessions` 会丢弃 index 键 → 双源分叉。现算成本是 O(节点数)，
+     * 与一次 search 同量级，而缓存需要在 `commit`/`patchNode` 两处挂失效钩子。
+     */
+    listSetMetas(): SetMeta[] {
+        const metas: SetMeta[] = []
+        for (const id of this.data.order) {
+            const node = this.data.nodes[id]
+            if (!node || !isStrategySet(node)) continue
+            metas.push({
+                setId: node.nodeId,
+                problem: node.problem,
+                altIds: node.altIds,
+                altNames: node.altIds.map((altId) => this.data.nodes[altId]?.name ?? "").filter((n) => !!n),
+                chosenAltId: node.chosenAltId,
+            })
+        }
+        return metas
+    }
+
+    getAdviceLog(): AdviceRecord[] {
+        return this.data.adviceLog
+    }
+
+    /** 追加一条建议/自动切换记录（§8）：FIFO 裁最旧，超上限不进工具返回。 */
+    appendAdvice(record: AdviceRecord): void {
+        this.data.adviceLog.push(record)
+        if (this.data.adviceLog.length > ADVICE_LOG_MAX) {
+            this.data.adviceLog.splice(0, this.data.adviceLog.length - ADVICE_LOG_MAX)
+        }
+        this.indexDirty = true
+        void this.persist()
+    }
+
+    /**
+     * status 末尾的策略库概览（§5.3）。
+     * `chosen` 取全局最近一个 `chosen`（§4.2 每会话 ≤1，故不同会话可能各有 1 个）。
+     */
+    strategyOverview(): StrategyOverview {
+        const sets = this.listSetMetas()
+        let altCount = 0
+        let chosen: StrategyOverview["chosen"] = null
+        for (const id of this.data.order) {
+            const node = this.data.nodes[id]
+            if (!node || !isStrategyAlt(node)) continue
+            altCount++
+            if (node.status !== "chosen") continue
+            const setNode = this.data.nodes[node.setId]
+            chosen = {
+                setId: node.setId,
+                problem: (setNode && isStrategySet(setNode) ? setNode.problem : node.setId) as string,
+                altName: node.name,
+            }
+        }
+        const log = this.data.adviceLog
+        const lastAdvice = log.length > 0 ? log[log.length - 1] : null
+        let lastAutoSwitch: AdviceRecord | null = null
+        for (let i = log.length - 1; i >= 0; i--) {
+            if (log[i].autoSwitched) {
+                lastAutoSwitch = log[i]
+                break
+            }
+        }
+        return { setCount: sets.length, altCount, chosen, lastAdvice, lastAutoSwitch }
+    }
+
+    /** 新节点入内存（不落盘）：供多节点原子写入复用，调用方负责最终 persist。 */
+    private addNode(node: NodeRecord): void {
+        this.data.nodes[node.nodeId] = node
+        this.data.order.push(node.nodeId)
+        this.appendToSession(node)
+        this.dirtySessions.add(sessionKeyOf(node))
+    }
+
+    /**
+     * 入库一组候选（§5.1）：1 个 strategy_set + N 个 strategy_alt（全部 `unproven`）。
+     *
+     * 显式写 parentId/branchId 是**防劫持**（§5.1）：
+     * - alt 的 `parentId` 固定为 `setId`，否则 `provisionalPick` 让某 alt 变 chosen 后
+     *   创建的 alt#2 会挂到 alt#1 下 → `descendantsOf(alt1)` 吞掉 alt#2 子树 → Wilson 双算；
+     * - alt 的 `branchId` = **自身 id**，否则 `commit` 的 `parent.branchId ?? parentId`
+     *   会让同 set 的所有 alt 共享一个 branchId。
+     */
+    proposeStrategySet(input: {
+        problem: string
+        alts: AltCandidate[]
+        provisionalPick?: string
+        parentId?: string
+        sessionId: string
+        agentName?: string
+    }): { setId: string; altIds: string[] } {
+        const agentName = input.agentName ?? "unknown"
+        const setId = "n-" + randomUUID().slice(0, 8)
+        // set 的缺省父取本会话最近的**经验节点**（决策发生的上下文），跳过策略库节点 ——
+        // 挂在另一个 set 的候选下会让两棵决策树形成父子从属，而两者语义上毫无关系。
+        // 即便该经验节点位于某 alt 子树内，descendantsOf 已切断穿树（strategy.ts），双保险。
+        const setParent = input.parentId ?? this.lastExperienceForSession(input.sessionId)?.nodeId
+        const createdAt = nowIso()
+
+        const setNode: NodeRecord = {
+            nodeId: setId,
+            projectId: this.data.projectId,
+            sessionId: input.sessionId,
+            agentName,
+            parentId: setParent,
+            branchId: setId,
+            summary: input.problem.slice(0, 60),
+            outcome: "partial",
+            policyVersion: this.data.activePolicyId,
+            files: [],
+            turnIndex: this.data.nextTurnIndex++,
+            createdAt,
+            type: "strategy_set",
+            problem: input.problem,
+            altIds: [],
+        }
+        this.addNode(setNode)
+
+        const altIds: string[] = []
+        for (const alt of input.alts) {
+            const altId = "n-" + randomUUID().slice(0, 8)
+            const altNode: NodeRecord = {
+                nodeId: altId,
+                projectId: this.data.projectId,
+                sessionId: input.sessionId,
+                agentName,
+                parentId: setId,
+                branchId: altId,
+                summary: `${alt.name}：${alt.approach}`.slice(0, 60),
+                outcome: "partial",
+                policyVersion: this.data.activePolicyId,
+                files: [],
+                turnIndex: this.data.nextTurnIndex++,
+                createdAt,
+                type: "strategy_alt",
+                setId,
+                name: alt.name,
+                approach: alt.approach,
+                tradeoffs: alt.tradeoffs,
+                estimatedRisk: alt.estimatedRisk,
+                status: "unproven",
+            }
+            this.addNode(altNode)
+            altIds.push(altId)
+        }
+        setNode.altIds = altIds
+
+        // 单次 persist：set 与全部 alt 一起落盘，不留半截候选组。
+        this.replayCache = null
+        void this.persist()
+
+        if (input.provisionalPick) {
+            this.pickStrategy({
+                setId,
+                altName: input.provisionalPick,
+                reason: "propose 时选定的初始分支",
+                sessionId: input.sessionId,
+                agentName: input.agentName,
+            })
+        }
+        return { setId, altIds }
+    }
+
+    /**
+     * 切换当前分支（§3.4 / §4.2）：同时服务冷启动选型与手动换路，
+     * dream 的全自动切换也复用这里（不变量自动保持）。
+     *
+     * 返回 `undefined` 的三种情况（工具层分别翻译中文）：
+     * set 不存在 / altName 不属于该 set / 目标已 `rejected`（真实证伪）。
+     *
+     * 注意 `superseded` **允许**重新选中 —— 它只表示「让位给更优分支」而非证伪，
+     * 子树 outcome 未变，重新启用不污染 §5.2 胜率；而 §4.8 的回滚路径正依赖这一点。
+     */
+    pickStrategy(input: {
+        setId: string
+        altName: string
+        reason?: string
+        verdict?: "superseded" | "rejected"
+        /** 宿主会话 id；缺省时退化为「只让位同 set 内的 chosen」，且不写轨迹节点。 */
+        sessionId?: string
+        agentName?: string
+    }): { previousAlt: string | null; currentAlt: string; note?: string } | undefined {
+        const setNode = this.data.nodes[input.setId]
+        if (!setNode || !isStrategySet(setNode)) return undefined
+
+        const target = setNode.altIds
+            .map((id) => this.data.nodes[id])
+            .find((node): node is StrategyAltNode => !!node && isStrategyAlt(node) && node.name === input.altName)
+        if (!target) return undefined
+
+        // 幂等（对齐 setActivePolicy）：已在该分支直接成功，不重复写轨迹。
+        if (target.status === "chosen") {
+            return { previousAlt: null, currentAlt: target.name, note: "已在该分支" }
+        }
+        if (target.status === "rejected") return undefined
+
+        // §4.2 不变量：先把**本会话**所有 chosen 让位（跨 set 也一并让位），
+        // 使「每会话 ≤1 chosen」恒成立 → §4.1 的「最后一个 chosen」才无歧义。
+        //
+        // 让位范围 = **target 归属会话** ∪ **调用方会话**（并集）。只按 input.sessionId 过滤
+        // 会漏掉 target 所属会话的旧 chosen：跨会话 pick（B 会话挑 A 会话 propose 的候选）时
+        // A 的旧 chosen 不让位，A 就会同时落盘 2 个 chosen 且事后无人清理 —— 随后
+        // resolveActiveAlt 按数组序取最后一个，可能把 commit 挂到用户并未确认的分支。
+        const scope = new Set<string>()
+        if (target.sessionId) scope.add(target.sessionId)
+        if (input.sessionId) scope.add(input.sessionId)
+
+        const patches: Array<[string, Partial<NodeRecord>]> = []
+        let previousAlt: string | null = null
+        for (const id of this.data.order) {
+            const alt = this.data.nodes[id]
+            if (!alt || !isStrategyAlt(alt)) continue
+            if (alt.status !== "chosen" || alt.nodeId === target.nodeId) continue
+            // scope 为空（节点缺 sessionId）→ 退化为只让位同 set 的 chosen，至少保住 set 内唯一
+            const shouldYield = scope.size > 0 ? scope.has(alt.sessionId) : alt.setId === setNode.nodeId
+            if (!shouldYield) continue
+            previousAlt = alt.name
+            patches.push([alt.nodeId, { status: input.verdict ?? "superseded" }])
+        }
+        patches.push([target.nodeId, { status: "chosen" }])
+        patches.push([setNode.nodeId, { chosenAltId: target.nodeId }])
+        this.batchPatch(patches)
+
+        // §2.5 隐式轨迹节点：type=strategy_note，不进经验统计（§3.5）也不进 Wilson 子树。
+        if (input.sessionId) {
+            this.commit({
+                sessionId: input.sessionId,
+                agentName: input.agentName ?? "unknown",
+                summary: `pick ${target.name}${input.reason ? `：${input.reason}` : ""}`.slice(0, 60),
+                outcome: "partial",
+                type: "strategy_note",
+                parentId: setNode.nodeId,
+                branchId: setNode.nodeId,
+            })
+        }
+        return { previousAlt, currentAlt: target.name, note: input.reason ? `切换理由：${input.reason}` : undefined }
     }
 
     /** Latest commit time (in ms) for a session, or null if the session never committed. */
@@ -572,8 +866,24 @@ export class MemoryStore {
         files: string[],
         params: RecallParams,
         nowTurn: number,
-        opts: { minScore?: number; limit?: number } = {},
+        opts: { minScore?: number; limit?: number; includeStrategySets?: boolean } = {},
     ): HitResult[] {
+        if (visible.length === 0) return []
+        // §3.5：策略库节点不套经验节点的打分公式——bm25/recency/successBoost 会把
+        // set/alt 当成可复用经验，稀释浮点 replay 与检索候选。
+        // set 的「决策入口」打分（§5.3）只在 search 需要；replay 必须整体排除 set ——
+        // 一旦 set 进语料，computeIdf/avgLen 就会偏移，同一批经验在「库里有无策略节点」
+        // 两种情况下的浮点 replay 数值不再相等（验收第 13 条），调参判断被非检索信号驱动。
+        const strategySets = new Set<string>()
+        const includeStrategySets = opts.includeStrategySets ?? false
+        visible = visible.filter((node) => {
+            if (isExperience(node)) return true
+            if (includeStrategySets && isStrategySet(node)) {
+                strategySets.add(node.nodeId)
+                return true
+            }
+            return false
+        })
         if (visible.length === 0) return []
         const p = clampParams(params)
         const limit = Math.round(Math.min(p.maxRecall, opts.limit ?? p.maxRecall))
@@ -596,6 +906,15 @@ export class MemoryStore {
         const results: HitResult[] = []
         for (let i = 0; i < visible.length; i++) {
             const node = visible[i]
+            // §5.3：set 作为「决策入口」只按 problem 与 query 的语义相似度命中，
+            // 不套经验节点的 bm25 / recency / successBoost 公式。
+            if (strategySets.has(node.nodeId)) {
+                const setScore = strategySetHitScore(node, queryTokens)
+                if (setScore >= (opts.minScore ?? p.minScore)) {
+                    results.push({ node, score: setScore, fileMatch: false, ftsMatch: setScore > 0, failureSimilar: false })
+                }
+                continue
+            }
             const doc = docs[i]
             const bm25 = bm25Score(queryTokens, doc, idf, docTokenSize(doc), avgLen)
             const fts = bm25Normalized(bm25)
@@ -624,7 +943,14 @@ export class MemoryStore {
         const nodes = this.sortedNodes()
         const nowTurn = this.data.nextTurnIndex - 1
         const params = opts.params ?? this.activePolicy().params
-        const results = nodes.length === 0 ? [] : this.scoreCandidates(nodes, query, files, params, nowTurn, { limit: opts.limit, minScore: opts.minScore })
+        const results =
+            nodes.length === 0
+                ? []
+                : this.scoreCandidates(nodes, query, files, params, nowTurn, {
+                      limit: opts.limit,
+                      minScore: opts.minScore,
+                      includeStrategySets: true, // §5.3：检索时 set 作为决策入口可命中
+                  })
         // P2：只有显式传 log 的用户面出口（tool/command/teaser）落盘；
         // status/menuStats 的 replay 打分与 dream 候选评估走 scoreCandidates，不经过这里。
         if (opts.log) {
@@ -669,7 +995,8 @@ export class MemoryStore {
         const counts = { success: 0, failed: 0, partial: 0 }
         for (const id of this.data.order) {
             const node = this.data.nodes[id]
-            if (!node || node.policyVersion !== policyId) continue
+            if (!node || !isExperience(node)) continue
+            if (node.policyVersion !== policyId) continue
             if (node.outcome in counts) counts[node.outcome as keyof typeof counts]++
         }
         return { served, ...counts }
@@ -684,7 +1011,17 @@ export class MemoryStore {
             activePolicyId: this.data.activePolicyId,
             policies: this.data.policies,
             dreamRuns: this.data.dreamRuns,
+            adviceLog: this.data.adviceLog,
         }
+    }
+
+    /**
+     * 等待所有已排队的持久化完成。
+     * 测试同步点：`persist()` 走 `writeChain` 异步队列，测试若用固定 `setTimeout` 盲等，
+     * 并行跑多文件时磁盘争用会让等待不足 → 读到未落盘的旧内容（flaky 根因）。
+     */
+    async flush(): Promise<void> {
+        await this.writeChain
     }
 
     private async persist(): Promise<void> {
@@ -709,14 +1046,14 @@ export class MemoryStore {
             .then(async () => {
                 if (partSnapshots.size > 0) {
                     await fs.mkdir(sessionsDir, { recursive: true })
-                    await cleanupStaleTmp(sessionsDir)
-                    await cleanupStaleTmp(dirname(indexFile))
+                    await cleanupStaleTmp(sessionsDir, this.logger)
+                    await cleanupStaleTmp(dirname(indexFile), this.logger)
                     for (const [key, content] of partSnapshots) {
                         await atomicWrite(join(sessionsDir, sessionFileName(key)), content)
                     }
                 }
                 if (indexSnapshot !== null) {
-                    await cleanupStaleTmp(dirname(indexFile))
+                    await cleanupStaleTmp(dirname(indexFile), this.logger)
                     await atomicWrite(indexFile, indexSnapshot)
                 }
             })

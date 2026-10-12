@@ -22,6 +22,8 @@ interface TransformMessage {
 export interface DreamDeps {
     logger: Logger
     meta?: MetaLlm
+    /** 可选：会话 id 兜底（`/dream run` 优先取 input.sessionID，为空时回落到这里）。 */
+    sessionId?: string
 }
 
 function isInternalAgentRequest(messages: TransformMessage[]): boolean {
@@ -201,8 +203,18 @@ export function createCommandExecuteHandler(
             if (command === "dream") {
                 const sub = argv[0] ?? "status"
                 if (sub === "status") text = statusText(store, config)
-                else if (sub === "run") text = (await runDream(store, config, deps)).text
-                else if (sub === "search") text = searchCommandText(store, argv.slice(1))
+                else if (sub === "run") {
+                    // P0：会话 id 必须接进 dream，否则 canAutoSwitch 的 hasActiveAlt 恒 false。
+                    // 字段名 = input.sessionID（本回调上方已解构），汇成 sessionId 传入；
+                    // 宿主可能给空串 → 回落 deps.sessionId，仍为空则由 dream.ts 内部守卫。
+                    text = (
+                        await runDream(store, config, {
+                            logger: deps.logger,
+                            meta: deps.meta,
+                            sessionId: sessionID || deps.sessionId,
+                        })
+                    ).text
+                } else if (sub === "search") text = searchCommandText(store, argv.slice(1))
                 else if (sub === "commit") text = commitCommandText(store, deps.collector, sessionID, argv.slice(1))
                 else text = dreamHelpText()
             } else {

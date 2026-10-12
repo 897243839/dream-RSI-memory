@@ -6,7 +6,8 @@ import type { MetaLlm } from "./meta-llm.js"
 import { nodeDetailText, replayOptsOf, statusText } from "./report.js"
 import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
-import type { CommitInput, Outcome } from "./types.js"
+import { checkPropose } from "./strategy.js"
+import type { AdviceRecord, CommitInput, NodeRecord, Outcome } from "./types.js"
 import { normalizeFiles, truncate } from "./utils.js"
 
 export interface ToolDeps {
@@ -52,6 +53,7 @@ export function createTools(deps: {
         },
         async execute(args, ctx) {
             const { sessionID, agent, worktree } = ctx
+            if (!sessionID) return "[dream-rsi-memory] 缺少 sessionID，无法记录。"
             const touched = collector.take(sessionID)
             const providedFiles = normalizeFiles(worktree, [...(args.files ?? []), ...touched])
 
@@ -118,6 +120,22 @@ export function createTools(deps: {
                         (hit.node.files.length ? `\n  文件：${hit.node.files.slice(0, 3).join(", ")}` : ""),
                 )
             }
+            // 策略集命中时注入该 set 的最新分支建议（§8）；adviceLog 为空则不注入，普通经验命中行为不变。
+            const adviceLog = store.getAdviceLog()
+            if (adviceLog.length > 0) {
+                for (const hit of hits) {
+                    if (hit.node.type !== "strategy_set") continue
+                    let latest: AdviceRecord | undefined
+                    for (const a of adviceLog) {
+                        if (a.setId !== hit.node.nodeId) continue
+                        if (!latest || a.createdAt > latest.createdAt) latest = a
+                    }
+                    if (!latest) continue
+                    lines.push(
+                        `  ▸ 分支建议（${hit.node.nodeId}）：推荐 ${latest.recommendedAltName}，margin ${latest.margin.toFixed(3)}，${latest.autoSwitched ? "已自动切换" : "未自动切换"}`,
+                    )
+                }
+            }
             if (hits.length === 0) {
                 lines.push("  无结果。可先 dream_rsi_memory_commit 记录当前局面，或换关键词/加文件路径重试。")
             } else {
@@ -182,9 +200,125 @@ export function createTools(deps: {
         description:
             "[dream-rsi-memory] 触发一次“做梦”：在严格时间线 holdout 上评估候选检索策略，仅当 train 与 valid 上都有稳健提升才切换策略（不退化保证）。可用 focus 指定优先改善的方面。",
         args: { focus: s.string().optional().describe("可选：希望优先改善的方面（file recall / failure avoid / precision / budget）；省略时自动取最薄弱指标") },
-        async execute(args, _ctx) {
-            const result = await runDream(store, config, { logger, meta, focus: args.focus })
-            return result.text
+        async execute(args, ctx) {
+            // §6.1 工具层从不 throw：runDream 内部已兜一层（running→failed），这里再套一层防御。
+            try {
+                const result = await runDream(store, config, {
+                    logger,
+                    meta,
+                    focus: args.focus,
+                    // P0：会话 id 必须接进 dream，否则 resolveActiveAlt 恒 null →
+                    // canAutoSwitch 条件 3 恒 false → 全自动切换永不触发。
+                    sessionId: ctx.sessionID || undefined,
+                })
+                return result.text
+            } catch (error) {
+                logger.error("dream tool failed", { error: String(error) })
+                return `[dream-rsi-memory] dream 执行失败：${String(error)}`
+            }
+        },
+    })
+
+    // ------------------------------------------------ strategy propose (§5.1)
+    const proposeTool = tool({
+        description:
+            "[dream-rsi-memory] 设计决策候选入库：把 3~10 个筛后的可靠候选方案（各含 approach/tradeoffs/estimatedRisk）作为一个策略集写入记忆树。检索确认库中没有该问题的候选后调用；入库后用 dream_rsi_memory_strategy_pick 定为当前分支。",
+        args: {
+            problem: s.string().describe("设计决策问题陈述（≤80 字）"),
+            alternatives: s
+                .array(
+                    s.object({
+                        name: s.string().describe("候选名（≤20 字，set 内唯一）"),
+                        approach: s.string().describe("实现路径（≤300 字）"),
+                        tradeoffs: s.string().describe("代价/取舍（≤200 字）"),
+                        estimatedRisk: s.string().describe("预估风险（≤200 字）"),
+                    }),
+                )
+                .describe("3~10 个筛后的可靠候选短名单"),
+            provisionalPick: s.string().optional().describe("冷启动预选的候选 name，必须在 alternatives 中"),
+            parentId: s.string().optional().describe("set 节点挂哪，省略走既有默认（最近节点）"),
+        },
+        async execute(args, ctx) {
+            const { sessionID, agent } = ctx
+            if (!sessionID) return "[dream-rsi-memory] 缺少 sessionID，无法入库候选。"
+            const check = checkPropose(
+                {
+                    problem: args.problem,
+                    alternatives: args.alternatives,
+                    provisionalPick: args.provisionalPick,
+                },
+                store.listSetMetas(),
+            )
+            if (!check.ok) return `[dream-rsi-memory] ${check.reason}`
+            const { setId, altIds } = store.proposeStrategySet({
+                problem: args.problem,
+                alts: args.alternatives,
+                provisionalPick: args.provisionalPick,
+                parentId: args.parentId,
+                sessionId: sessionID,
+                agentName: agent ?? "unknown",
+            })
+            return (
+                `[dream-rsi-memory] 策略集 ${setId} 已入库，候选节点：${altIds.join(", ")}` +
+                `\n候选已入库（均为 unproven），请用 dream_rsi_memory_strategy_pick 将其中之一定为当前分支。`
+            )
+        },
+    })
+
+    // ------------------------------------------------- strategy pick (§5.2)
+    const pickTool = tool({
+        description:
+            "[dream-rsi-memory] 把策略集中的某个候选定为当前分支（冷启动选定 / 撞墙手动换路）。被换下的旧分支按 verdict 记为 superseded（让位，不计失败）或 rejected（真实证伪，计入失败）。",
+        args: {
+            setId: s.string().describe("策略集节点 id，例如 n-ab12cd34"),
+            altName: s.string().describe("候选 name（需属于该策略集）"),
+            reason: s.string().optional().describe("选定/切换理由"),
+            verdict: s
+                .union([s.literal("superseded"), s.literal("rejected")])
+                .optional()
+                .describe("被让位旧分支的判定：superseded=主动让位（默认） rejected=真实证伪"),
+        },
+        async execute(args, ctx) {
+            const { sessionID, agent } = ctx
+            if (!sessionID) return "[dream-rsi-memory] 缺少 sessionID，无法切换分支。"
+            const res = store.pickStrategy({
+                setId: args.setId,
+                altName: args.altName,
+                reason: args.reason,
+                verdict: args.verdict,
+                sessionId: sessionID,
+                agentName: agent ?? "unknown",
+            })
+            if (!res) {
+                const setMetas = store.listSetMetas()
+                const set = setMetas.find((m) => m.setId === args.setId)
+                if (!set) {
+                    const available = setMetas.map((m) => m.setId).join(", ")
+                    return `[dream-rsi-memory] 策略集 ${args.setId} 不存在。可用：${available || "（无）"}`
+                }
+                const altNames = set.altIds
+                    .map((id) => store.getNode(id)?.name)
+                    .filter((n): n is string => !!n)
+                    .join(", ")
+                if (!set.altIds.some((id) => store.getNode(id)?.name === args.altName)) {
+                    return `[dream-rsi-memory] 候选 ${args.altName} 不属于策略集 ${args.setId}。可用：${altNames || "（无）"}`
+                }
+                // altName 属于该 set 却仍返回 undefined：set 存在 + 成员匹配已被上面两条拦掉，
+                // 此处只可能是目标 status=rejected（真实证伪，不可再选）；chosen/superseded 都会返回成功对象。
+                const selectable = set.altIds
+                    .map((id) => store.getNode(id))
+                    .filter(
+                        (n): n is NodeRecord =>
+                            !!n && !!n.name && (n.status ?? "unproven") !== "rejected",
+                    )
+                    .map((n) => `${n.name}(${n.status ?? "unproven"})`)
+                    .join(", ")
+                return `[dream-rsi-memory] 候选 ${args.altName} 已被证伪（status=rejected），不可再选为当前分支。可选候选：${selectable || "（无）"}（status 为 unproven/chosen/superseded）`
+            }
+            const head = res.previousAlt
+                ? `[dream-rsi-memory] 分支切换：${res.previousAlt} → ${res.currentAlt}`
+                : `[dream-rsi-memory] 已选定分支 ${res.currentAlt}`
+            return head + (res.note ? `\n${res.note}` : "")
         },
     })
 
@@ -195,5 +329,7 @@ export function createTools(deps: {
         dream_rsi_memory_status: statusTool,
         dream_rsi_memory_policy: switchTool,
         dream_rsi_memory_dream: dreamTool,
+        dream_rsi_memory_strategy_propose: proposeTool,
+        dream_rsi_memory_strategy_pick: pickTool,
     }
 }

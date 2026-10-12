@@ -1,12 +1,8 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs"
-import { join } from "node:path"
-import { commitN, loadStore, baseConfig } from "./helpers.mjs"
-
-async function flush() {
-    await new Promise((r) => setTimeout(r, 50))
-}
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs"
+import { join, basename } from "node:path"
+import { commitN, loadStore, baseConfig, flush } from "./helpers.mjs"
 
 function readJson(file) {
     return JSON.parse(readFileSync(file, "utf8"))
@@ -78,7 +74,7 @@ test("persists as index.json + one session file per session", async () => {
     const store = await loadStore(config)
     commitN(store, 4, { sessionId: "sess-a" })
     commitN(store, 2, { sessionId: "sess-b" })
-    await flush()
+    await flush(store)
 
     const projectDir = join(config.dataDir, "tproj")
     const indexFile = join(projectDir, "index.json")
@@ -155,7 +151,7 @@ test("rebuilds from session files when index.json is lost", async () => {
     const store = await loadStore(config)
     const ids = commitN(store, 3, { sessionId: "sess-a", summary: "alpha billing fix" })
     const last = store.commit({ summary: "beta db migration", files: ["src/db.ts"], sessionId: "sess-b", agentName: "build" })
-    await flush()
+    await flush(store)
 
     const indexFile = join(config.dataDir, "tproj", "index.json")
     assert.ok(existsSync(indexFile), "precondition: index.json exists")
@@ -179,20 +175,33 @@ test("stale atomically-written tmp files are cleaned on next persist", async () 
     const sessionsDir = join(projectDir, "sessions")
     // establish the real session file name so leftovers target the writes that follow
     store.commit({ summary: "seed", files: ["a.ts"], sessionId: "s", agentName: "build" })
-    await flush()
+    await flush(store)
     const sessionFiles = readdirSync(sessionsDir).filter((f) => f.endsWith(".json"))
     assert.equal(sessionFiles.length, 1)
-    // plant leftovers simulating a crashed atomicWrite for both write targets
-    writeFileSync(join(sessionsDir, sessionFiles[0] + ".tmp-99999-1"), "stale", "utf8")
-    writeFileSync(join(projectDir, "index.json.tmp-99999-2"), "stale", "utf8")
+    // plant leftovers simulating a crashed atomicWrite for both write targets.
+    // 清理规则是「pid ≠ 本进程 且 mtime > 60s」双条件：
+    //   - `.tmp-999999-*`（外部 pid）+ 旧 mtime → 应删
+    //   - `.tmp-${process.pid}-*`（本进程）+ 旧 mtime → 必须留（可能正被本进程写）
+    const staleSessionTmp = join(sessionsDir, sessionFiles[0] + ".tmp-999999-1")
+    const staleIndexTmp = join(projectDir, "index.json.tmp-999999-2")
+    const ownPidTmp = join(sessionsDir, sessionFiles[0] + `.tmp-${process.pid}-99`)
+    writeFileSync(staleSessionTmp, "stale", "utf8")
+    writeFileSync(staleIndexTmp, "stale", "utf8")
+    writeFileSync(ownPidTmp, "in-flight", "utf8")
+    // 新规则只删 mtime 超过 STALE_TMP_MS(60s) 的 tmp → 把三个文件的 mtime 一起往回调，
+    // 否则刚写出来的 tmp 永远「不够旧」，清理路径根本走不到。
+    const old = new Date(Date.now() - 5 * 60_000)
+    utimesSync(staleSessionTmp, old, old)
+    utimesSync(staleIndexTmp, old, old)
+    utimesSync(ownPidTmp, old, old)
     // next commit triggers persist → cleanup runs against both targets
     store.commit({ summary: "cleanup check", files: ["b.ts"], sessionId: "s", agentName: "build" })
-    await flush()
+    await flush(store)
 
-    assert.equal(
-        readdirSync(sessionsDir).filter((f) => f.includes(".tmp-")).length,
-        0,
-        "session-file tmp leftovers must be removed",
+    assert.deepEqual(
+        readdirSync(sessionsDir).filter((f) => f.includes(".tmp-")),
+        [basename(ownPidTmp)],
+        "session-file tmp：外部 pid 的旧残留必须删除，本进程 pid 的必须留下",
     )
     assert.equal(
         readdirSync(projectDir).filter((f) => f.startsWith("index.json.tmp-")).length,
@@ -200,13 +209,16 @@ test("stale atomically-written tmp files are cleaned on next persist", async () 
         "index tmp leftovers must be removed",
     )
     assert.ok(existsSync(join(sessionsDir, sessionFiles[0])), "the session file itself must survive cleanup")
+    // 双条件的另一半：pid 过滤优先于 mtime —— 本进程 pid 的 tmp 即使 mtime 再旧也不删
+    assert.ok(existsSync(ownPidTmp), "本进程 pid 的 tmp 即使 mtime 很旧也不能删")
+    assert.ok(!existsSync(staleSessionTmp), "非本进程 pid 且 mtime 超龄的 tmp 必须删掉")
 })
 
 test("load repairs a garbage rootPath persisted by a bad startup", async () => {
     const config = baseConfig()
     const store = await loadStore(config)
     commitN(store, 1, { sessionId: "sess-a" })
-    await flush()
+    await flush(store)
     const indexFile = join(config.dataDir, "tproj", "index.json")
     const index = readJson(indexFile)
     index.rootPath = "/"
@@ -235,7 +247,7 @@ test("reload round-trips turn order across sessions", async () => {
     const store = await loadStore(config)
     const ids = commitN(store, 3, { sessionId: "sess-x" }).map((n) => n.nodeId)
     store.commit({ summary: "later", files: ["y.ts"], sessionId: "sess-y", agentName: "build" })
-    await flush()
+    await flush(store)
 
     const reloaded = await loadStore(config)
     assert.equal(reloaded.count(), 4)

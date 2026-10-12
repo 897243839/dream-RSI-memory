@@ -13,6 +13,24 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 - 参考论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
 - Design doc（详细方案）: [`docs/Dream-RSI-记忆库设计方案.md`](docs/Dream-RSI-记忆库设计方案.md)
 
+## 与 Dream-RSI 论文的关系（分层标注）
+
+本仓库机制分两层，归属不同，**引用只覆盖第一层**：
+
+**派生自 Dream-RSI 论文**（方法来源，见文末引用与 `docs/Dream-RSI-记忆库设计方案.md`）：
+- 历史轨迹构成决策树，记忆节点带 `success`/`failed` 结局
+- 「做梦」= 在严格时间线 holdout 上离线回放候选策略，零成本评估
+- `epsilon` 不退化门槛：train 与 valid 都稳健提升才切换
+- 进化对象是「策略」而非底层 agent
+
+**本项目独立扩展**（论文无对应机制，**不引用论文作为方法来源**）：
+- 策略库（设计选型）：`strategy_set` / `strategy_alt` 节点 + `superseded` 第三语义
+- 分支评估：Wilson 下界 + `partial` 半权的子树打分，`adviceLog` 检索注入
+- `propose` / `pick` 两个工具的纯规则护栏
+- 每会话至多一个 `chosen` 分支的不变量
+
+详见实现依据定稿 [`docs/Dream-RSI 策略库扩展 最终设计方案（opencode 端）.md`](<docs/Dream-RSI 策略库扩展 最终设计方案（opencode 端）.md>)。
+
 ## 机制
 
 1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `dream_rsi_memory_commit`
@@ -33,6 +51,16 @@ Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，�
 5. **真实查询回放**：工具/命令/teaser 三个检索出口落盘 `querylog.jsonl`，replay
    在真实用例足够（≥ `replayMinRealQueries`）时把它们并入 train 指标；每个策略的
    在线战绩（服务查询数 / 节点成败计数）在 `dream_rsi_memory_status` 末尾展示。
+6. **设计决策策略库**（与浮点参数进化正交）：技术选型 / 架构取舍这类**多路尝试型
+   决策**走另一条通道。首次遇到且库里无该问题的候选时，模型（经系统提示的 WHEN
+   第 4 条驱动）自己开 sub-agent 并行探索 ≥20 个方向 → 筛出约 5 个可靠候选 →
+   `question` 工具与用户确认选哪个 → `dream_rsi_memory_strategy_propose` 入库
+   （全 `unproven`）→ `dream_rsi_memory_strategy_pick` 定为当前分支。此后 `commit`
+   自动挂到该分支累积真实 outcome；下次 `dream` 对各候选子树做 **Wilson 下界打分**
+   （`partial` 半权，样本 <3 不参与），margin > 0.2 且样本 ≥ 5 且当前会话确有在执行
+   分支时**自动切换**到更优候选并通知，人可用 `pick` 回滚（幂等）。
+   **插件全程零 LLM、零后台 agent**：探索、筛选、与人交互都由模型自己完成，
+   插件只提供存储与评估引擎。
 
 ## 安装
 

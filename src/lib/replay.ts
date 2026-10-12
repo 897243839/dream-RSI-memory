@@ -1,6 +1,7 @@
 import { readQueryLog, type QueryLogEntry } from "./querylog.js"
 import { FAILURE_SIM_THRESHOLD, extractPathsFromText, fileOverlap, tokenSimilarity, tokenizeText } from "./scoring.js"
 import type { MemoryStore } from "./store.js"
+import { isExperience } from "./strategy.js"
 import type { NodeRecord, RecallParams, ReplayMetrics, ReplayOptions, ReplayReport } from "./types.js"
 import { normalizeProjectPath } from "./utils.js"
 
@@ -67,9 +68,12 @@ function evalRange(store: MemoryStore, nodes: NodeRecord[], params: RecallParams
     const parts = emptyParts()
     for (let i = start; i < end; i++) {
         const target = nodes[i]
+        if (!isExperience(target)) continue // 策略库节点（strategy_set/strategy_alt）不进浮点 replay 的 target 集合（§3.5）
         if (i === 0) continue // no history before the first node
         const query = target.summary + (target.files.length ? " " + target.files.join(" ") : "")
-        const hits = store.scoreCandidates(nodes.slice(0, i), query, target.files, params, target.turnIndex)
+        // 候选窗口同样只留经验节点（与 evalRealCases 的口径一致）：set 若进语料会偏移
+        // idf/avgLen，并挤占 maxRecall 名额，使 replay 数值随策略库的存在而漂移。
+        const hits = store.scoreCandidates(nodes.slice(0, i).filter(isExperience), query, target.files, params, target.turnIndex)
 
         if (target.files.length) {
             parts.fileHitDen++
@@ -127,14 +131,17 @@ function resolveTurn(entry: QueryLogEntry, nodes: NodeRecord[]): number | null {
  */
 function evalRealCases(store: MemoryStore, logs: QueryLogEntry[], params: RecallParams, windowTurns: number): MetricParts {
     const parts = emptyParts()
-    const nodes = store.sortedNodes()
+    const nodes = store.sortedNodes().filter(isExperience)
     if (nodes.length === 0) return parts
     for (const entry of logs) {
         const t = resolveTurn(entry, nodes)
         if (t === null) continue
         const files = queryFiles(store, entry.query)
         if (files.length === 0) continue // query 提不出文件路径 → 该用例跳过
-        const visible = nodes.filter((n) => n.turnIndex <= t)
+        // replay 评估的是**检索策略**质量，策略库节点必须整体排除：
+        // set 若以「决策入口」身份命中会拉低 precision、抬高 budget，
+        // 让调参判断被非检索信号污染（scoreCandidates 内部虽有分流，这里仍要在源头挡住）。
+        const visible = nodes.filter((n) => n.turnIndex <= t && isExperience(n))
         if (visible.length === 0) continue
         const labelIds = new Set(
             nodes
@@ -176,7 +183,10 @@ export function splitIndex(n: number, trainRatio: number): number {
  * （∪ 合成用例）；否则与旧行为完全一致（realCases=0）。
  */
 export function runReplay(store: MemoryStore, params: RecallParams, opts: ReplayOptions): ReplayReport {
-    const nodes = store.sortedNodes()
+    const all = store.sortedNodes()
+    // train/valid 分界必须**只按经验节点**算：策略节点（set/alt/note）混入会推移分界点，
+    // 让「propose 一次」就改变同一批经验的 replay 数值（§3.5 / 验收第 13 条）。
+    const nodes = all.filter(isExperience)
     const n = nodes.length
     const split = splitIndex(n, opts.trainRatio)
     let trainParts = evalRange(store, nodes, params, 0, split)

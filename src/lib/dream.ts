@@ -5,7 +5,16 @@ import { runReplay } from "./replay.js"
 import { replayOptsOf } from "./report.js"
 import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
-import type { MemoryConfig, RecallParams, ReplayMetrics } from "./types.js"
+import {
+    ADVICE_DELTA,
+    buildChildIndex,
+    canAutoSwitch,
+    descendantsOf,
+    isStrategyAlt,
+    scoreSubtree,
+    type AltScore,
+} from "./strategy.js"
+import type { AdviceRecord, MemoryConfig, RecallParams, ReplayMetrics } from "./types.js"
 import { clampParams, fnv1a32, mulberry32, perturbParams } from "./utils.js"
 
 function weakestNote(metrics: ReplayMetrics, weights: MemoryConfig["replayWeights"]): string {
@@ -90,13 +99,118 @@ export interface DreamRunResult {
     text: string
 }
 
+/**
+ * 互斥门的超时阈值（§4.4 的必要补充）：`DreamStatus.running` 是**持久化**状态，
+ * 若进程在 dream 中途崩溃，index.json 会留下永久的 running → dream 从此再也
+ * 不会被触发。超龄的 running 视为崩溃残留并放行。
+ */
+const DREAM_RUNNING_STALE_MS = 10 * 60_000
+
+/**
+ * 策略库分支评估 + **全自动切换**（设计方案 §7.1 打分 / §4.8 切换）。
+ *
+ * 与浮点参数 replay 完全正交：不切 policy、不写经验节点，只改 `strategy_alt` 的
+ * `status`（经 `pickStrategy`，`batchPatch` 单次落盘保证「每会话 ≤1 chosen」）。
+ * 建议与切换轨迹写进 `index.json` 的 `adviceLog`（§8，FIFO 50）。
+ */
+function evaluateStrategyBranches(
+    store: MemoryStore,
+    logger: Logger,
+    sessionId?: string,
+): { text: string; records: AdviceRecord[] } {
+    const sets = store.listSetMetas()
+    if (sets.length === 0) return { text: "", records: [] }
+
+    // set 的 altIds 可能含脏 id（§6.2）：先建索引再逐个校验，取不到就跳过。
+    const idx = buildChildIndex(store.sortedNodes())
+    const activeAlt = sessionId ? store.resolveActiveAlt(sessionId) : null
+    const records: AdviceRecord[] = []
+    const lines: string[] = []
+
+    for (const meta of sets) {
+        const scored: AltScore[] = []
+        for (const altId of meta.altIds) {
+            const altNode = idx.byId.get(altId)
+            if (!altNode || !isStrategyAlt(altNode)) continue
+            // 已证伪（rejected）的候选不参与 best/second 评选：既不该被推荐，
+            // 更不该被「自动切换」过去 —— pickStrategy 对 rejected 会返回 undefined。
+            if (altNode.status === "rejected") continue
+            scored.push({ altId, name: altNode.name, ...scoreSubtree(descendantsOf(idx, altId)) })
+        }
+        const proven = scored.filter((a) => a.score !== null)
+        if (proven.length < 2) continue
+
+        const sorted = [...proven].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        const best = sorted[0] as AltScore
+        const second = sorted[1] as AltScore
+        const margin = (best.score ?? 0) - (second.score ?? 0)
+        if (margin <= ADVICE_DELTA) continue
+
+        // 自动切换四条件在 canAutoSwitch 内（§4.8）：margin / ≠当前 chosen /
+        // 本会话确有 active alt / best.n ≥ 5。
+        let switched = canAutoSwitch({
+            best,
+            second,
+            currentChosenAltId: meta.chosenAltId,
+            hasActiveAlt: !!activeAlt,
+        })
+        let switchNote = ""
+        if (switched) {
+            try {
+                const picked = store.pickStrategy({
+                    setId: meta.setId,
+                    altName: best.name,
+                    reason: `dream 自动切换：${best.name} 显著优于当前分支（margin=${margin.toFixed(3)}）`,
+                    sessionId,
+                })
+                if (picked) {
+                    switchNote = `\n  → 已自动切换到 ${best.name}（原分支让位为 superseded，outcome 不变）；后续 commit 挂到新分支。`
+                } else {
+                    // pickStrategy 对「目标 rejected / 不存在」返回 undefined 且不抛：
+                    // 必须按**实际**结果上报，不能把没发生的切换说成成功（§6.1）。
+                    switched = false
+                    switchNote = `\n  → ⚠ 自动切换未生效（候选状态不允许）。`
+                    logger.warn("strategy auto switch not applied", { setId: meta.setId, altName: best.name })
+                }
+            } catch (error) {
+                switched = false
+                logger.error("strategy auto switch failed", { setId: meta.setId, error: String(error) })
+                switchNote = `\n  → ⚠ 自动切换失败：${String(error)}；可手动 dream_rsi_memory_strategy_pick 切换。`
+            }
+        }
+
+        const record: AdviceRecord = {
+            setId: meta.setId,
+            problem: meta.problem,
+            recommendedAltId: best.altId,
+            recommendedAltName: best.name,
+            margin,
+            nBest: best.n,
+            nSecond: second.n,
+            autoSwitched: switched,
+            createdAt: new Date().toISOString(),
+        }
+        store.appendAdvice(record)
+        records.push(record)
+
+        lines.push(
+            `  ▸ ${meta.problem}\n` +
+                `    推荐 ${best.name}（score=${(best.score ?? 0).toFixed(3)}, n=${best.n}）` +
+                ` 优于 ${second.name}（${(second.score ?? 0).toFixed(3)}, n=${second.n}），margin=${margin.toFixed(3)}` +
+                switchNote,
+        )
+    }
+
+    if (lines.length === 0) return { text: "", records: [] }
+    return { text: `[dream-rsi-memory] 策略库分支评估：\n${lines.join("\n")}`, records }
+}
+
 export async function runDream(
     store: MemoryStore,
     config: MemoryConfig,
-    deps: { logger: Logger; meta?: MetaLlm; focus?: string },
+    deps: { logger: Logger; meta?: MetaLlm; focus?: string; sessionId?: string },
 ): Promise<DreamRunResult> {
     const runId = "r-" + randomUUID().slice(0, 8)
-    const n = store.count()
     const dreamCfg = config.dream
 
     // P0 接通 dream.enabled：禁用时工具/命令都返回"已禁用"，不评估不记录。
@@ -104,6 +218,60 @@ export async function runDream(
         return { runId, text: "[dream-rsi-memory] dream 已禁用（dream.enabled=false）：不评估、不切换。" }
     }
 
+    // §4.4 dream 互斥：并发 dream 会互相覆盖 patchNodePolicy，provisional 转正语义乱。
+    // 用现成的 DreamStatus.running 字段（不加新键），并带超时自愈（见常量注释）。
+    const latestRun = store.latestDream()
+    if (latestRun?.status === "running") {
+        const started = Date.parse(latestRun.startedAt ?? "")
+        const stale = Number.isNaN(started) || Date.now() - started > DREAM_RUNNING_STALE_MS
+        if (!stale) {
+            return {
+                runId,
+                text: `[dream-rsi-memory] 已有一次 dream 正在运行（${latestRun.runId}），本次跳过 —— 并发 dream 会互相覆盖策略切换结果。`,
+            }
+        }
+    }
+    const startedAt = new Date().toISOString()
+    store.recordDream({
+        runId,
+        status: "running",
+        startedAt,
+        candidatesJson: "[]",
+        chosenPolicyId: store.activePolicy().policyId,
+    })
+
+    // §4.4 出口兜底 + §6.1「工具层从不 throw」：主体一旦抛错，把 running 收敛成
+    // failed（否则 `running` 会永久残留，只能等 DREAM_RUNNING_STALE_MS 超时自愈，
+    // 期间所有 dream 都被互斥门拒绝），并向调用方返回中文失败串，不 rethrow。
+    try {
+        return await runDreamBody(store, config, deps, runId)
+    } catch (error) {
+        deps.logger.error("dream failed", { runId, error: String(error) })
+        store.recordDream({
+            runId,
+            status: "failed",
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            candidatesJson: "[]",
+            chosenPolicyId: store.activePolicy().policyId,
+            notes: String(error),
+        })
+        return { runId, text: `[dream-rsi-memory] dream 执行失败：${String(error)}` }
+    }
+}
+
+/**
+ * `runDream` 的主体：`recordDream({status:"running"})` **之后**的全部逻辑。
+ * 正常路径行为与改造前逐字一致；异常交由外壳收敛为 `status:"failed"`。
+ */
+async function runDreamBody(
+    store: MemoryStore,
+    config: MemoryConfig,
+    deps: { logger: Logger; meta?: MetaLlm; focus?: string; sessionId?: string },
+    runId: string,
+): Promise<DreamRunResult> {
+    const n = store.count()
+    const dreamCfg = config.dream
     const stage = getStage(n, dreamCfg)
 
     // S 播种期：不评估不切换，但必须写 DreamRunRecord（不再静默跳过）——
@@ -121,12 +289,16 @@ export async function runDream(
             notes,
         })
         deps.logger.info("dream deferred: seed stage", { runId, n })
+        // 播种期节点少，浮点 replay 不评估；但策略库分支评估仍要跑 ——
+        // 否则「S 期」会成为自动切换的永久死角（set/alt 子树样本可以独立于 replay 增长）。
+        const seedBranch = evaluateStrategyBranches(store, deps.logger, deps.sessionId)
         return {
             runId,
             text:
                 `[dream-rsi-memory] 做梦未评估：证据不足（n=${n} < ${dreamCfg.minNodesProvisional}），信号采集中。\n` +
                 `  当前为播种期（S）：只积累节点与检索信号，不调参、不切换（策略保持 ${active.policyId}）。\n` +
-                `  继续 dream_rsi_memory_commit / dream_rsi_memory_search；节点 ≥ ${dreamCfg.minNodesProvisional} 后进入试用期（M），dream 可试调。`,
+                `  继续 dream_rsi_memory_commit / dream_rsi_memory_search；节点 ≥ ${dreamCfg.minNodesProvisional} 后进入试用期（M），dream 可试调。` +
+                (seedBranch.text ? `\n${seedBranch.text}` : ""),
         }
     }
 
@@ -215,7 +387,19 @@ export async function runDream(
             promoted
     }
 
-    const notes = [`stage=${stage}`, note || "", relaxedM ? `relaxed-gate: valid=${validCount}<${dreamCfg.minValidNodes}` : "", curatorError]
+    // 分支评估 + 全自动切换（§7.1 打分 / §4.8 切换）：与浮点 replay 正交 —— 不切浮点
+    // policy、不写经验节点，只改 strategy_alt.status。必须在 recordDream **之前**跑，
+    // 否则 `strategy-advice=N` 只留在内存里的 notes，永远进不了持久化的 DreamRunRecord。
+    const branch = evaluateStrategyBranches(store, deps.logger, deps.sessionId)
+    if (branch.text) text += `\n${branch.text}`
+
+    const notes = [
+        `stage=${stage}`,
+        note || "",
+        relaxedM ? `relaxed-gate: valid=${validCount}<${dreamCfg.minValidNodes}` : "",
+        curatorError,
+        branch.records.length ? `strategy-advice=${branch.records.length}` : "",
+    ]
         .filter(Boolean)
         .join(" · ")
     store.recordDream({
@@ -227,6 +411,7 @@ export async function runDream(
         chosenPolicyId: chosen,
         notes: notes || undefined,
     })
-    deps.logger.info("dream finished", { runId, stage, better, chosen })
+
+    deps.logger.info("dream finished", { runId, stage, better, chosen, strategyAdvice: branch.records.length })
     return { runId, text }
 }

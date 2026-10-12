@@ -41,6 +41,15 @@ export async function loadStore(config = baseConfig()) {
     })
 }
 
+/**
+ * 测试同步点：等待 store 已排队的持久化全部落盘。
+ * 替代「固定 sleep 当同步点」——并行跑时磁盘争用会让固定 50ms 偶发不够。
+ * 不要用可选链兜底：`store.flush` 缺失时必须立刻抛错暴露，而不是退化回盲等。
+ */
+export async function flush(store) {
+    await store.flush()
+}
+
 export function commitN(store, n, overrides = {}) {
     const out = []
     for (let i = 0; i < n; i++) {

@@ -12,6 +12,8 @@ const EXPECTED_TOOLS = [
     "dream_rsi_memory_status",
     "dream_rsi_memory_policy",
     "dream_rsi_memory_dream",
+    "dream_rsi_memory_strategy_propose",
+    "dream_rsi_memory_strategy_pick",
 ]
 
 function loadEntry() {
@@ -80,7 +82,7 @@ function projectWithConfig(overrides = {}) {
     }
 }
 
-test("V1 server registers the 6 tools and non-empty command templates", async () => {
+test("V1 server registers the 8 tools and non-empty command templates", async () => {
     const mod = await loadEntry()
     const { project, dispose } = projectWithConfig()
     const { input } = fakeV1Host(project)
@@ -91,7 +93,7 @@ test("V1 server registers the 6 tools and non-empty command templates", async ()
         assert.deepEqual(
             Object.keys(hooks.tool ?? {}).sort(),
             [...EXPECTED_TOOLS].sort(),
-            "V1 hooks.tool 必须是完整 6 工具",
+            "V1 hooks.tool 必须是完整 8 工具",
         )
         for (const definition of Object.values(hooks.tool ?? {})) {
             assert.equal(typeof definition.execute, "function", `${definition.description}.execute`)

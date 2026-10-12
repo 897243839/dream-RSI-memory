@@ -19,6 +19,8 @@ const EXPECTED_TOOLS = [
     "dream_rsi_memory_status",
     "dream_rsi_memory_policy",
     "dream_rsi_memory_dream",
+    "dream_rsi_memory_strategy_propose",
+    "dream_rsi_memory_strategy_pick",
 ]
 
 /**
@@ -147,7 +149,7 @@ test("setup registers tools, commands and hooks under an isolated project", asyn
         assert.deepEqual(
             state.tools.map((t) => t.name).sort(),
             [...EXPECTED_TOOLS].sort(),
-            "六个 dream 工具都要注册",
+            "八个 dream 工具都要注册",
         )
         for (const definition of state.tools) {
             assert.equal(typeof definition.execute, "function", `${definition.name}.execute`)

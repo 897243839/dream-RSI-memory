@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased
+## v2.2.0 · 2026-10-12
+
+**第二期改造：设计决策策略库（propose / pick / 自动切换）**
+
+新增「策略库扩展」：把技术选型 / 架构取舍这类**设计决策**变成可累积真实结果、可自动选优的
+分支树，与既有的浮点检索参数进化正交并存。设计依据见
+`docs/Dream-RSI 策略库扩展 最终设计方案（opencode 端）.md`。
+
+- **2 个新工具**（前缀与旧 6 个同源，`src/lib/tools.ts` 返回表自动注册，共 8 个）：
+  - `dream_rsi_memory_strategy_propose`：入库 1 个 `strategy_set` + 3~10 个
+    `strategy_alt`（全部 `unproven`）。护栏在 `src/lib/strategy.ts:checkPropose`
+    （纯规则、不调 LLM）：候选数、name 去重、字段限长、`problem` 与历史 set
+    高相似则**复用不新建**。
+  - `dream_rsi_memory_strategy_pick`：切换当前分支；幂等（已 `chosen` 直接成功）；
+    已 `rejected` 拒绝；已 `superseded` **允许**重新选中（回滚路径，其子树 outcome 未变）。
+- **全自动分支切换**（`src/lib/dream.ts:evaluateStrategyBranches`）：dream 在浮点
+  replay 之外评估每个 set 的候选子树，Wilson 下界打分（`partial` 半权），margin >
+  `AUTO_SWITCH_DELTA`(0.2) 且 best.n ≥ 5 且当前会话确有 active alt 时**自动 pick**
+  切换，写 `adviceLog` 并在返回文案中告知。margin ∈ (0.15, 0.2] 只给建议不切换。
+- **`index.json` 新增键 `adviceLog`**（`AdviceRecord[]`，FIFO 50）。懒补覆盖 4 个
+  数据构造点；**脏数据绝不进 load 的 index 门**（否则一条坏记录触发 rebuild，
+  `policies`/`dreamRuns` 会被重置）。
+- **模块拆分降复杂度**：从 `store.ts` 抽出策略工厂 → 新增 `src/lib/policy.ts`（L1 叶子）；
+  新增 `src/lib/strategy.ts`（L0.5 纯函数：护栏 / Wilson / 树遍历 / 推导 / 切换判定），
+  不值 import 任何 L1+ 模块，零环。
+- **`NodeRecord` 只加一个可选字段 `type`**（`"experience" | "strategy_set" |
+  "strategy_alt" | "strategy_note"`），磁盘上无此键 = 经验节点，旧库零迁移。
+  `outcome` **保持必填**（set/alt 填占位 `"partial"`），避免 10 处读取点连带修改。
+- **5 处 `type === "experience"` 过滤**（`replay.ts:evalRange` / `evalRealCases`、
+  `store.ts:count` / `scoreCandidates` / `onlineStats`、`report.ts:nodeStatsText`），
+  保证浮点 replay 数值基线不变、阶段切换不被稀释。`store.count()` 只数经验节点。
+- **set 作为「决策入口」单独打分**（`store.ts:scoreCandidates`）：只按 `problem` 与
+  query 的语义相似度命中，不套 bm25/recency/successBoost；命中时 search 注入该 set
+  的最新 advice。
+- **`commit` 自动挂靠**（`store.ts:commit`）：未传 `parentId` 时挂到本会话 active alt，
+  使真实 outcome 累积到候选子树上（Wilson 打分的数据来源）。
+- **`batchPatch`**：pick 一次改 3~N 个节点，同步 apply 后**单次** persist，避免中断留下
+  0 个或 2 个 `chosen`（代码无唯一性校验兜底）。不变量：**每会话 ≤1 `chosen`**。
+- **提示词注入**（`src/lib/prompts.ts`）：系统帮助块 WHEN 新增第 4 条（设计决策工作流：
+  sub-agent 探索 ≥20 → 筛 ~5 → question 与人选 → propose → pick）与第 5 条（自动切换
+  感知）；菜单「可动作」新增一行。
+- **修复跨进程破坏源**（`store.ts:cleanupStaleTmp`）：原实现无差别删目录内所有 `.tmp-`，
+  会删掉**另一个进程正在写的**临时文件，其 rename 抛错被 `writeChain` 的 catch 静默吞掉
+  → 静默丢一次写。现按 **pid + mtime(60s)** 双条件过滤。
+- 新增空 `sessionID` guard：`commit` / `strategy_propose` / `strategy_pick`
+  （宿主给空串会落 `unknown` 桶，导致跨会话串味）。
+- 新增测试：`test/strategy.test.mjs`、`test/strategy-store.test.mjs`、
+  `test/dream-switch.test.mjs`、`test/prompts-inject.test.mjs`。
 
 ## v2.1.1 · 2026-10-10
 

@@ -30,6 +30,18 @@ export const PARAM_CLAMPS: Record<keyof RecallParams, [number, number]> = {
     minScore: [0, 0.3],
 }
 
+/**
+ * 节点类型：经验节点（缺省）/ 策略集（设计决策问题）/ 策略候选分支 /
+ * 策略切换轨迹（pick 写的隐式记录节点）。
+ *
+ * `strategy_note` 是为了让 §2.5 的切换轨迹**不稀释经验统计** —— 它不是可复用
+ * 经验，计入 `count()` 会提前触发阶段切换、污染在线胜率（§3.5）。
+ */
+export type NodeType = "experience" | "strategy_set" | "strategy_alt" | "strategy_note"
+
+/** 候选分支状态（4 个，不新增）：未证明 / 当前选定 / 被更优分支替代 / 真实证伪。 */
+export type AltStatus = "unproven" | "chosen" | "superseded" | "rejected"
+
 export interface NodeRecord {
     nodeId: string
     projectId: string
@@ -47,26 +59,47 @@ export interface NodeRecord {
     turnIndex: number
     createdAt: string
     autoCreated?: boolean
+    /** 缺省视为 "experience"（旧库兼容：磁盘上无此键）。 */
+    type?: NodeType
+    /** strategy_set 专用：设计决策问题陈述。 */
+    problem?: string
+    /** strategy_set 专用：候选 alt 节点 id 列表。 */
+    altIds?: string[]
+    /** strategy_set 专用：当前 chosen 的 alt 节点 id。 */
+    chosenAltId?: string
+    /** strategy_alt 专用：所属 set 节点 id。 */
+    setId?: string
+    /** strategy_alt 专用：候选名（set 内唯一）。 */
+    name?: string
+    /** strategy_alt 专用：实现路径。 */
+    approach?: string
+    /** strategy_alt 专用：代价/取舍。 */
+    tradeoffs?: string
+    /** strategy_alt 专用：预估风险。 */
+    estimatedRisk?: string
+    /** strategy_alt 专用：候选状态。 */
+    status?: AltStatus
 }
 
-export interface PolicyRecord {
-    policyId: string
-    code: "params"
-    params: RecallParams
-    replayTrain?: number
-    replayValid?: number
-    isActive: boolean
-    parentPolicyId?: string
-    dreamRound: number
+/** strategy_set 节点的收窄别名（便于消费侧免逐字段判空）。 */
+export type StrategySetNode = NodeRecord & { type: "strategy_set"; problem: string; altIds: string[] }
+
+/** strategy_alt 节点的收窄别名。 */
+export type StrategyAltNode = NodeRecord & { type: "strategy_alt"; setId: string; name: string; status: AltStatus }
+
+/** dream 分支评估产出的建议记录（追加到 index.json 的 adviceLog，FIFO 上限 50）。 */
+export interface AdviceRecord {
+    setId: string
+    problem: string
+    recommendedAltId: string
+    recommendedAltName: string
+    margin: number
+    /** best 的子树经验节点数。 */
+    nBest: number
+    nSecond: number
+    /** 本次建议是否触发了全自动切换。 */
+    autoSwitched: boolean
     createdAt: string
-    /** Replay scores measured at policy-creation time (watchdog baseline). */
-    replayAtCreation?: { train: number; valid: number | null }
-    /** Provenance: "default" = p-default, "seed" = 建库时的播种候选（P1）。 */
-    source?: "default" | "seed"
-    /** 播种时使用的 RNG 种子（可复现性记录）。 */
-    seed?: number
-    /** 试用期（M）切换出的策略标记，正式期（F）守擂/切换后清除。 */
-    provisional?: boolean
 }
 
 export type DreamStatus = "queued" | "running" | "done" | "failed"
@@ -90,6 +123,8 @@ export interface CommitInput {
     score?: number
     parentId?: string
     branchId?: string
+    /** 节点类型（策略库轨迹节点用 strategy_note，避免计入经验统计）。 */
+    type?: NodeType
     sessionId: string
     agentName: string
     autoCreated?: boolean
