@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { basename, isAbsolute, relative, resolve, sep } from "node:path"
+import { isAbsolute, relative, resolve, sep } from "node:path"
 import { PARAM_CLAMPS, type RecallParams } from "./types.js"
 
 export function sha1Id(value: string): string {
@@ -65,10 +65,6 @@ export function normalizeProjectPath(root: string, input: string): string | null
     if (isAbsolute(rel)) return null
     if (rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("../")) return null
     return toPosix(rel)
-}
-
-export function fileStem(file: string): string {
-    return basename(file).replace(/\.[^.]*$/, "")
 }
 
 export function dedupe(list: string[]): string[] {

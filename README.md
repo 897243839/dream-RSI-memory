@@ -3,15 +3,20 @@
 > 让 opencode 拥有会自我进化的长期记忆
 > A self-evolving long-term memory plugin for [opencode](https://opencode.ai).
 
+> Long-term memory plugin for [opencode](https://opencode.ai) — self-evolving AI agent memory in TypeScript.
+
+Dream-RSI 记忆库的独立实现：把历史会话蒸馏成决策树节点，检索策略以浮点参数表示；
+「做梦」时在严格时间线 holdout 上离线回放不同候选策略，只接受在 train 与 valid
+都稳健提升者 —— 因此策略**只会更好、不会退化**，且无需重新训练任何模型；另含
+**设计决策策略库**（`strategy_propose` / `strategy_pick`），把技术选型这类多路尝试型
+决策也纳入记忆树长期演化。
+
 **Independent implementation of the Dream-RSI technique. This project is not
 affiliated with Google, Google DeepMind, or the authors of the Dream-RSI paper.**
 
-Dream-RSI 记忆库的初版实现：把历史会话蒸馏成决策树节点，检索策略以浮点参数表示；
-「做梦」时在严格时间线 holdout 上离线回放不同候选策略，只接受在 train 与 valid
-都稳健提升者 —— 因此策略**只会更好、不会退化**，且无需重新训练任何模型。
-
 - 参考论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
 - Design doc（详细方案）: [`docs/Dream-RSI-记忆库设计方案.md`](docs/Dream-RSI-记忆库设计方案.md)
+- [Changelog](CHANGELOG.md)
 
 ## 与 Dream-RSI 论文的关系（分层标注）
 
@@ -190,6 +195,8 @@ npm run install:opencode                                  # 同上 dev 安装
 | `dream_rsi_memory_status` | 记忆库状态 + 阶段 + replay 指标 + 每策略在线战绩 |
 | `dream_rsi_memory_policy` | 手动切换检索策略 |
 | `dream_rsi_memory_dream` | 触发一次「做梦」优化策略（S 期返回证据不足，M 期放宽门槛试调） |
+| `dream_rsi_memory_strategy_propose` | 设计决策候选入库：把 3~10 个筛后的可靠候选方案（各含 approach/tradeoffs/estimatedRisk）作为一个策略集写入记忆树；纯规则护栏，不调 LLM |
+| `dream_rsi_memory_strategy_pick` | 切换当前分支：把策略集中的某个候选定为当前分支（幂等；已 rejected 拒绝再选，已 superseded 允许回滚） |
 
 回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
 （冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction

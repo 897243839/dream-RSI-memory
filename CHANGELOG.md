@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.3.0 · 2026-10-12
+
+**清理无效代码 + 重写项目描述 + GitHub 检索优化**
+
+- **删除 9 条零引用死代码**（全仓引用计数为 0 且非外部契约）：`utils.fileStem`、
+  `v2-compat.rolesOf`/`textOfMessage`、`tools.ToolDeps` 接口、`store.getProjectId`、
+  `index.type CommandHandler`、`dream-nudge.DREAM_NUDGE_LOW_QUALITY`（连带
+  `hooks.ts` 死 import）、`HitResult.ftsMatch`（含 2 处写入点）、
+  `PolicyRecord.replayTrain/replayValid`（从未被写入也从未被读）；另清
+  `v2-compat.ts` 中 `V2ContentPart`/`V2Message` 两个死 import。
+- **系统提示接线 `renderSystemHelpText()`**：该结构化文案（WHEN / WHEN-NOT /
+  真实示例 / 哲学，含设计决策工作流与自动切换感知）自写下起就从未被调用，
+  真实注入的一直是 `hooks.ts` 里的 2 行旧弱文案。本次接线并删除旧 `systemHelp()`，
+  新旧双轨收敛为一条；`test/entry.test.mjs` 断言同步更新，并**新增一条防回退断言**
+  （必须含 `WHEN（满足其一就参与`）。
+- **README 重写**：首屏补英文一句话钩子（`in:readme` 与外网抓取需要）、删「初版
+  实现」改版本中性表述、Google 免责声明下移让位给功能卖点、补 Changelog 链接、
+  **工具表 6 → 8 行**（补 `strategy_propose` / `strategy_pick`）。
+  论文分层标注与 arXiv 引用段完整保留。
+- **`package.json`**：`description` 重写为含关键词的英文一句；`keywords` 补
+  `long-term-memory` / `ai-memory` / `agent-memory` / `ai-agent` / `llm` /
+  `dream-rsi` 等。
+- **GitHub 检索根因修复**（官方文档：省略 `in:` 时**只搜 name / description /
+  topics**，README 默认不参与搜索）：仓库此前 `description: null`、`topics: []`，
+  即除仓库名外**无任何可命中字段**。发布时用 `gh repo edit` 补 About description
+  与 16 个 topics（`opencode`、`opencode-plugin`、`dream-rsi`、`long-term-memory`、
+  `ai-memory`、`agent-memory`、`memory`、`ai-agent`、`agents`、`llm-agent`、`llm`、
+  `ai`、`plugin`、`typescript`、`nodejs`、`self-evolving`），并让仓库挂进
+  `github.com/topics/<topic>` 聚合页获得独立流量入口。刻意排除不相关的高流量标签
+  （`rag` / `mcp` / `claude` / `openai` 等），避免标签误导。
+- 测试 138/138 通过。
+
 ## v2.2.0 · 2026-10-12
 
 **第二期改造：设计决策策略库（propose / pick / 自动切换）**

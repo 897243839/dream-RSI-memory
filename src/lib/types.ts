@@ -134,7 +134,6 @@ export interface HitResult {
     node: NodeRecord
     score: number
     fileMatch: boolean
-    ftsMatch: boolean
     failureSimilar: boolean
 }
 

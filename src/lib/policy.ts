@@ -9,8 +9,6 @@ export interface PolicyRecord {
     policyId: string
     code: "params"
     params: RecallParams
-    replayTrain?: number
-    replayValid?: number
     isActive: boolean
     parentPolicyId?: string
     dreamRound: number

@@ -1,8 +1,8 @@
 {
     "name": "dream-rsi-memory",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "type": "module",
-    "description": "dream-RSI-memory — a self-evolving long-term memory plugin for opencode: an independent implementation of the Dream-RSI technique (arXiv:2609.14858). No affiliation with Google.",
+    "description": "Self-evolving long-term memory plugin for opencode — independent TypeScript implementation of the Dream-RSI technique (arXiv:2609.14858).",
     "main": "./dist/index.js",
     "bin": {
         "dreamrsimem": "./dist/cli.js"
@@ -46,6 +46,13 @@
         "opencode-plugin",
         "plugin",
         "memory",
+        "long-term-memory",
+        "ai-memory",
+        "agent-memory",
+        "ai-agent",
+        "llm",
+        "ai",
+        "typescript",
         "dream-rsi",
         "recall"
     ],

@@ -1,11 +1,11 @@
 import type { Part, UserMessage } from "@opencode-ai/sdk"
 import { captureTurn, extractNodeFields, type FileCollector } from "./capture.js"
 import { runDream } from "./dream.js"
-import { DREAM_NUDGE_LOW_QUALITY, DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE, DREAM_NUDGE_TRIAL } from "./dream-nudge.js"
+import { DREAM_NUDGE_NODE_THRESHOLD, DREAM_NUDGE_STALE, DREAM_NUDGE_TRIAL } from "./dream-nudge.js"
 import type { Logger } from "./logger.js"
 import type { GateRegistry } from "./menu.js"
 import type { MetaLlm } from "./meta-llm.js"
-import { renderMenuText } from "./prompts.js"
+import { renderMenuText, renderSystemHelpText } from "./prompts.js"
 import { dreamHelpText, nodeDetailText, policyListText, replayOptsOf, statusText } from "./report.js"
 import { getStage } from "./stages.js"
 import type { MemoryStore } from "./store.js"
@@ -49,19 +49,12 @@ function lastUserIndex(messages: TransformMessage[]): number {
     return -1
 }
 
-function systemHelp(): string {
-    return [
-        "[dream-rsi-memory] 长期记忆工具（按需调用，非每回合必须）",
-        "开工前若怀疑过去做过类似任务，可用 dream_rsi_memory_search 检索历史经验；回合中产生了值得复用的结论或踩坑时，用 dream_rsi_memory_commit 记录一条；当记忆节点足够多（≥20）时可 dream_rsi_memory_dream 让检索策略自我进化。所有动作都会在合适时机由列表提示，跟不跟着做均可。",
-    ].join("\n")
-}
-
 export function createSystemPromptHandler(config: MemoryConfig): ((input: unknown, output: { system: string[] }) => Promise<void>) | undefined {
     if (!config.enabled || !config.menu.enabled) return undefined
     return async (_input, output) => {
         const marker = "[dream-rsi-memory]"
         if (output.system.some((s) => s.includes(marker))) return
-        output.system.push(systemHelp())
+        output.system.push(renderSystemHelpText())
     }
 }
 

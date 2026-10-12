@@ -10,15 +10,6 @@ import { checkPropose } from "./strategy.js"
 import type { AdviceRecord, CommitInput, NodeRecord, Outcome } from "./types.js"
 import { normalizeFiles, truncate } from "./utils.js"
 
-export interface ToolDeps {
-    client: unknown
-    store: MemoryStore
-    config: ReturnType<typeof import("./config.js").resolveConfig>
-    logger: Logger
-    collector: FileCollector
-    meta: MetaLlm
-}
-
 function outcomeLabel(outcome: Outcome): string {
     return outcome === "success" ? "成功" : outcome === "failed" ? "失败" : "部分完成"
 }

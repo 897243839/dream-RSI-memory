@@ -21,7 +21,6 @@ const MEMORY_COMMAND_DESCRIPTION = "Dream-RSI-Memory：记忆库（stats / polic
  * 结构上不匹配但运行时是同一批数据，所以在调用点做一次显式收窄。
  */
 type ContextHandler = NonNullable<ReturnType<typeof createMessagesTransformHandler>>
-type CommandHandler = NonNullable<ReturnType<typeof createCommandExecuteHandler>>
 
 /**
  * 注入标记：V2 的 TextPart 没有 V1 的 `synthetic` 字段，只能放 metadata，

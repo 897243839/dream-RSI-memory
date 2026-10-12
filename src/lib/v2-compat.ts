@@ -15,7 +15,7 @@
  *   工具 execute 返回 string        → { content: string }
  */
 import { tool } from "@opencode-ai/plugin"
-import type { V2ContentPart, V2Context, V2Message, V2ToolContext, V2ToolDefinition, V2ToolResult } from "./v2-types.js"
+import type { V2Context, V2ToolContext, V2ToolDefinition, V2ToolResult } from "./v2-types.js"
 
 /** V1 client 里被真实用到的四个方法（capture.ts / meta-llm.ts / hooks.ts）。 */
 export interface LegacyClient {
@@ -261,15 +261,3 @@ export function toV2Tool(
     }
 }
 
-/** 供 index.ts 复用：V2 context event 的消息 → V1 `{info, parts}` 需要的 role 列表。 */
-export function rolesOf(messages: readonly V2Message[]): string[] {
-    return messages.map((message) => message?.role ?? "")
-}
-
-/** 取某个 V2 消息的纯文本（菜单注入时定位最后一条 user 消息用）。 */
-export function textOfMessage(message: V2Message): string {
-    return (message?.content ?? [])
-        .map((part: V2ContentPart) => (part?.type === "text" ? String(part.text ?? "") : ""))
-        .filter(Boolean)
-        .join("\n")
-}

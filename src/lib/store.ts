@@ -364,10 +364,6 @@ export class MemoryStore {
         return store
     }
 
-    getProjectId(): string {
-        return this.data.projectId
-    }
-
     getRootPath(): string {
         return this.data.rootPath
     }
@@ -911,7 +907,7 @@ export class MemoryStore {
             if (strategySets.has(node.nodeId)) {
                 const setScore = strategySetHitScore(node, queryTokens)
                 if (setScore >= (opts.minScore ?? p.minScore)) {
-                    results.push({ node, score: setScore, fileMatch: false, ftsMatch: setScore > 0, failureSimilar: false })
+                    results.push({ node, score: setScore, fileMatch: false, failureSimilar: false })
                 }
                 continue
             }
@@ -929,7 +925,7 @@ export class MemoryStore {
                 (node.outcome === "failed" && failureSimilar ? p.failureBoost : 0)
 
             if (score < (opts.minScore ?? p.minScore)) continue
-            results.push({ node, score, fileMatch: ov > 0, ftsMatch: fts > 0, failureSimilar })
+            results.push({ node, score, fileMatch: ov > 0, failureSimilar })
         }
         results.sort((a, b) => b.score - a.score)
         return results.slice(0, limit)

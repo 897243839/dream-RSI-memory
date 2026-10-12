@@ -245,10 +245,21 @@ test("session.context hook injects system help and the menu", async () => {
         const first = turn("第一轮")
         await contextHook(first)
         assert.ok(
-            first.system.some((part) => part.text.includes("[dream-rsi-memory] 长期记忆工具")),
+            first.system.some((part) => part.text.includes("[dream-rsi-memory] 长期记忆")),
             "system 帮助文案必须注入",
         )
+        assert.ok(
+            first.system.some((part) => part.text.includes("WHEN（满足其一就参与")),
+            "必须注入 renderSystemHelpText 的结构化 WHEN 文案（而非旧的 2 行弱文案 systemHelp）",
+        )
         assert.equal(first.messages[0].content.length, 1, "冷启动不应注入菜单")
+
+        await contextHook(first)
+        assert.equal(
+            first.system.filter((part) => part.text.includes("[dream-rsi-memory] 长期记忆")).length,
+            1,
+            "去重：同一请求内重复调用 context hook 只能注入 1 条 system 帮助文案（renderSystemHelpText 首行含 marker，若去重失效会重复注入）",
+        )
 
         const commit = state.tools.find((t) => t.name === "dream_rsi_memory_commit")
         await commit.execute({ summary: "第一轮的结论", outcome: "success" }, toolCallCtx())
