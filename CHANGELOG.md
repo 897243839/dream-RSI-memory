@@ -15,10 +15,16 @@
   真实注入的一直是 `hooks.ts` 里的 2 行旧弱文案。本次接线并删除旧 `systemHelp()`，
   新旧双轨收敛为一条；`test/entry.test.mjs` 断言同步更新，并**新增一条防回退断言**
   （必须含 `WHEN（满足其一就参与`）。
-- **README 重写**：首屏补英文一句话钩子（`in:readme` 与外网抓取需要）、删「初版
-  实现」改版本中性表述、Google 免责声明下移让位给功能卖点、补 Changelog 链接、
-  **工具表 6 → 8 行**（补 `strategy_propose` / `strategy_pick`）。
-  论文分层标注与 arXiv 引用段完整保留。
+- **README 全文重构**（286 → 267 行，11 节）：新增 3 个 badges、「特性」价值一览
+  （7 条）与目录；首屏三行 tagline 堆叠合并为一句中英定位、免责声明下移；
+  「机制」6 个编号长段拆为 5 个 `###` 小节（S/M/F 三阶段改表格，信息未丢）；
+  安装段 **94 → 51 行**（`Bun.resolveSync` 内部机制收成 3 行目录条目警告）、
+  v2.0.1 改名迁移 6 → 2 行、配置删 8 条冗余行内注释；论文分层标注整段移至文末
+  专节**一字未删**，工具表补至 8 行、命令表 8 行原样。
+  同时修正两处与代码不符的表述：「7 个**浮点**参数」→「7 个**可调**参数」
+  （`recencyHalfLife` / `maxRecall` 实为整数，见 `utils.ts` 的 `INTEGER_PARAMS`）；
+  「插件**全程零 LLM**」→「**策略库**零 LLM」（`curator` 馆藏管理员 LLM 自 v2.1.0
+  起默认开，原表述与 `config.ts` 的 `curator.enabled: true` 自相矛盾）。
 - **`package.json`**：`description` 重写为含关键词的英文一句；`keywords` 补
   `long-term-memory` / `ai-memory` / `agent-memory` / `ai-agent` / `llm` /
   `dream-rsi` 等。

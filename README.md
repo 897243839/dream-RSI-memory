@@ -1,24 +1,235 @@
 # dream-RSI-memory
 
-> 让 opencode 拥有会自我进化的长期记忆
-> A self-evolving long-term memory plugin for [opencode](https://opencode.ai).
+[![Release](https://img.shields.io/github/v/release/897243839/dream-RSI-memory)](https://github.com/897243839/dream-RSI-memory/releases)
+[![License](https://img.shields.io/github/license/897243839/dream-RSI-memory)](LICENSE)
+[![opencode](https://img.shields.io/badge/opencode-plugin-blue)](https://opencode.ai)
 
-> Long-term memory plugin for [opencode](https://opencode.ai) — self-evolving AI agent memory in TypeScript.
+> **让 opencode 拥有会自我进化的长期记忆** — self-evolving long-term memory
+> plugin for [opencode](https://opencode.ai)，Dream-RSI 技术的独立 TypeScript 实现。
 
-Dream-RSI 记忆库的独立实现：把历史会话蒸馏成决策树节点，检索策略以浮点参数表示；
-「做梦」时在严格时间线 holdout 上离线回放不同候选策略，只接受在 train 与 valid
-都稳健提升者 —— 因此策略**只会更好、不会退化**，且无需重新训练任何模型；另含
-**设计决策策略库**（`strategy_propose` / `strategy_pick`），把技术选型这类多路尝试型
-决策也纳入记忆树长期演化。
-
-**Independent implementation of the Dream-RSI technique. This project is not
-affiliated with Google, Google DeepMind, or the authors of the Dream-RSI paper.**
+把历史会话蒸馏成决策树，检索策略离线回放进化，**只升不降**。
 
 - 参考论文: [Dream-RSI: Virtual-Time History Distillation Awakens Evolving Behavior](https://arxiv.org/abs/2609.14858) (arXiv:2609.14858, 2026)
 - Design doc（详细方案）: [`docs/Dream-RSI-记忆库设计方案.md`](docs/Dream-RSI-记忆库设计方案.md)
 - [Changelog](CHANGELOG.md)
 
-## 与 Dream-RSI 论文的关系（分层标注）
+**Independent implementation of the Dream-RSI technique. This project is not affiliated with Google, Google DeepMind, or the authors of the Dream-RSI paper.**
+
+## 特性
+
+- **不退化保证**：候选策略只有在 train 与 valid **两个集合上都**稳健提升（≥ 基线 + ε）才会被切换，否则保持现状——检索只会更好、不会退化，且无需重训任何模型。
+- **三阶段样本门槛**：S 播种期（n < 5）只记录不评估、M 试用期（5 ≤ n < 20）放宽门槛试调并打 `provisional` 标记、F 正式期（n ≥ 20）双门槛转正；样本不足时不乱切。
+- **真实查询回放**：工具 / 命令 / teaser 三个检索出口落盘 `querylog.jsonl`，真实用例并入训练信号；每个策略的服务查询数与节点成败战绩在 `status` 一览。
+- **设计决策策略库**：技术选型这类多路尝试型决策走独立通道——并行探索 ≥20 个方向、筛 3~10 个候选入库，Wilson 下界打分，margin > 0.2 且样本 ≥ 5 自动切换更优分支。
+- **策略库零 LLM、零后台 agent**：探索、筛选、与人交互全由模型自己完成，插件只提供存储与纯规则评估引擎。
+- **纯 JSON 本地存储**：无数据库，按项目（工作区路径哈希）隔离、按会话拆分写入，随时可备份可 diff。
+- **模型主导的工作流**：8 个工具 + 8 个 `/dream`、`/memory` 命令 + 回合结束的可选菜单提示，何时记录、检索、做梦由模型自主决定。
+
+## 目录
+
+- [特性](#特性)
+- [工作原理](#工作原理)
+- [安装](#安装)
+- [数据](#数据)
+- [工具](#工具)
+- [命令](#命令)
+- [配置](#配置)
+- [与 Dream-RSI 论文的关系](#与-dream-rsi-论文的关系)
+- [开发](#开发)
+- [致谢](#致谢)
+- [License](#license)
+
+## 工作原理
+
+### 采集
+
+回合结束后模型自主调用 `dream_rsi_memory_commit`（把结论 / 踩坑记成决策树节点）、
+`dream_rsi_memory_search`（开工前检索历史）或 `dream_rsi_memory_dream`（做梦）；
+插件只提供存储、检索与离线评估引擎。
+
+### 检索
+
+7 个可调参数决定候选如何排序：文件重合权重 / FTS 权重 / 成功加成 / 失败加成 /
+时衰半衰期 / 召回上限 / 最低分数；失败节点因失败加成更高而天然高价值。
+工具 / 命令 / teaser 三个用户面检索出口全部落盘 `querylog.jsonl`，replay 在真实用例
+≥ `replayMinRealQueries` 时把它们并入 train 指标；每个策略的在线战绩（服务查询数 /
+节点成败计数）在 `dream_rsi_memory_status` 末尾展示。
+
+### 做梦
+
+在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标——文件命中率 /
+失败规避率 / 精确率 / 召回预算——的加权总分；只有 train 与 valid **都** ≥ 基线 + ε
+才切换，否则保持现状。样本门槛分三阶段：
+
+| 阶段 | 样本数 | 行为 |
+| --- | --- | --- |
+| **S 播种期** | n < 5 | 不评估不切换，只写一条「证据不足」的运行记录 |
+| **M 试用期** | 5 ≤ n < 20 | 正常评估；valid 样本 < 3 时放宽为「只过 train 且 ε 加倍」，切换出的策略带 `provisional` |
+| **F 正式期** | n ≥ 20 | 双门槛不变；dream 后 provisional 策略守擂转正、被更优候选超则交接 |
+
+### 进化
+
+候选池 = π₀ 保底（当前策略）+ 建库播种的 `seedCount` 组参数 + 启发式变体（每次运行
+叠加 seeded ±20% 微扰）+ 后台「馆藏管理员」LLM（**默认开**，失败自动降级，只损失本次
+候选，dream 照常完成）。
+
+### 策略库
+
+与参数进化正交的另一条通道，处理技术选型 / 架构取舍这类**多路尝试型决策**：首次遇到且
+库中无该问题的候选时，模型自己开 sub-agent 并行探索 ≥20 个方向 → 筛出约 5 个可靠候选
+（`propose` 接受 3~10 个）→ `question` 工具与用户确认 → `strategy_propose` 入库（全
+`unproven`）→ `strategy_pick` 定为当前分支；此后 `commit` 自动挂到该分支累积真实
+outcome。下次 `dream` 对各候选子树做 **Wilson 下界打分**（`partial` 半权、样本 < 3 不
+参与），margin > 0.2 且样本 ≥ 5 且当前会话确有在执行分支时**自动切换**到更优候选并通知，
+人可用 `pick` 回滚（幂等）。全程**零 LLM、零后台 agent**。
+
+## 安装
+
+> 插件**未发布到 npm registry**（不要 `npm install dream-rsi-memory`）：安装脚本把插件
+> 自包含安装进本地 `~/.cache/opencode/packages/dream-rsi-memory@latest/`，再把**包目录**
+> 追加进 `plugin` 数组；幂等可重跑，改完重跑刷新、**重启 opencode** 生效。
+>
+> ⚠️ **opencode 2.x 只接受目录条目**：写文件路径会被打 `configured plugin path must be
+> a directory` 并**静默丢弃**（插件完全不加载），写裸包名则每次启动跑一次 `npm install`；
+> 入口按 `<目录>/index` 解析——仓库根 `index.js` 是为此存在的 shim，不读 `package.json` 的 `main`。
+
+### 联网机器
+
+```bash
+npm install        # 安装开发依赖（含 @opencode-ai/plugin、typescript）
+npm run install:opencode
+```
+
+构建 `dist/` → 插件本体 + `@opencode-ai/plugin` 闭包装进缓存 scope（registry 不可达时
+回退拷贝仓库 `node_modules`）→ 包目录追加进 `plugin` 配置 → 冒烟自检；随后**重启 opencode**。
+
+### 内网 / 离线机器
+
+联网机 `npm run pack:offline` 打出单文件 `tar.gz`（安装器 + npm 离线缓存闭包），拷到目标机解压执行（需 Node + npm，全程不联网）：
+
+```bash
+npm install            # 只有生成时这一台需要
+npm run pack:offline   # 产出 dream-rsi-memory-offline.tar.gz（~21MB）
+# 目标机解压后：
+powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
+./install.sh                                            # Linux / macOS
+```
+
+安装器用随包 `vendor/npm-cache` 跑 `npm install --offline` 写配置并自检，结束**重启
+opencode**；无 npm 可改 `npm run vendor` → `node scripts/install.mjs --offline`；运维
+`--uninstall` 卸载、`--config <path>` 指定配置文件。
+
+> 手动方式（不推荐，仍需先跑一次安装脚本把闭包放进缓存）——`plugin` 条目必须是**目录**：
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+{
+    "plugin": [
+        "C:/Users/<you>/.cache/opencode/packages/dream-rsi-memory@latest/node_modules/dream-rsi-memory"
+    ]
+}
+```
+
+也可 `npm run build` 后直接指向本地仓库目录（**是目录不是 `dist/index.js` 文件**）。
+
+> 桌面版（opencode GUI）无项目目录启动时插件自动回退到用户主目录注册，`/dream*`、`/memory*` 与 `dream_rsi_memory_*` 始终可用。
+
+## 数据
+
+每个项目（按工作区路径 sha1 哈希）一份，默认落盘在
+`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-rsi-memory/<projectId>/`
+纯 JSON、无数据库。目录结构：
+
+```
+<projectId>/
+├─ index.json                  # 小型索引：项目元信息 + 检索策略 + 做梦记录
+├─ querylog.jsonl              # 用户面检索日志（真实查询回放的数据源）
+└─ sessions/<会话>.json         # 按会话拆分：每个会话一个文件，仅含该会话的记忆节点
+```
+
+写入时只重写对应会话文件与小型索引，不再每次全量重写整个项目；旧版单个 `memory.json`
+在启动时自动迁移为 v2 布局（原文件改名 `memory.json.bak`）。
+
+> **v2.0.1 改名迁移**：插件 id / 数据目录 / 工具名由 `dream-memory` 改为 `dream-rsi-memory`
+> （`dream_memory_*` → `dream_rsi_memory_*`），旧数据目录启动时自动迁移、旧名配置仍可读，详见 [CHANGELOG](CHANGELOG.md)。
+
+## 工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `dream_rsi_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
+| `dream_rsi_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
+| `dream_rsi_memory_node` | 查看节点详情 |
+| `dream_rsi_memory_status` | 记忆库状态 + 阶段 + replay 指标 + 每策略在线战绩 |
+| `dream_rsi_memory_policy` | 手动切换检索策略 |
+| `dream_rsi_memory_dream` | 触发一次「做梦」优化策略（S 期返回证据不足，M 期放宽门槛试调） |
+| `dream_rsi_memory_strategy_propose` | 设计决策候选入库：把 3~10 个筛后的可靠候选方案（各含 approach/tradeoffs/estimatedRisk）作为一个策略集写入记忆树；纯规则护栏，不调 LLM |
+| `dream_rsi_memory_strategy_pick` | 切换当前分支：把策略集中的某个候选定为当前分支（幂等；已 rejected 拒绝再选，已 superseded 允许回滚） |
+
+回合结束时插件在最后一条用户消息上注入**可选菜单**提示上述动作：冷却 2 回合、有新节点
+或每 5 回合强制出现一次；title/summary/compaction 等内部 agent 永不注入。
+
+## 命令
+
+| 命令 | 作用 | 等价工具 |
+| --- | --- | --- |
+| `/dream status` | 记忆库 + replay 概览 | `dream_rsi_memory_status` |
+| `/dream run` | 立即触发一次做梦优化 | `dream_rsi_memory_dream` |
+| `/dream commit <结论摘要>` | 记一条结论（可带 `成功\|失败\|部分`，自动关联本轮触碰文件） | `dream_rsi_memory_commit` |
+| `/dream search <关键词>` | 检索历史经验 | `dream_rsi_memory_search` |
+| `/memory stats` | 节点统计与当前策略（同 `/dream status`） | `dream_rsi_memory_status` |
+| `/memory policy` | 全部策略列表 | `dream_rsi_memory_policy` |
+| `/memory show <nodeId>` | 查看某节点详情 | `dream_rsi_memory_node` |
+| `/memory search <关键词>` | 同 `/dream search` | `dream_rsi_memory_search` |
+
+## 配置
+
+任一位置（按优先级）放置 `dream-rsi-memory.jsonc` / `dream-rsi-memory.json`：
+`$OPENCODE_CONFIG_DIR/` → 项目 `.opencode/` → 项目根 → `~/.config/opencode/`。
+
+```jsonc
+{
+    "debug": false,
+    "autoCommitOnIdle": true,
+    "autoCommitIdleGapMs": 300000, // 最短间隔（毫秒）
+    "menu": {
+        "enabled": true,
+        "cooldownTurns": 2,      // 两次注入之间最少用户回合数
+        "forceEveryTurns": 5,    // 无新节点时最多隔几回合强制出现
+        "maxTokensHint": 200
+    },
+    "dream": {
+        "enabled": true,
+        "minNodesProvisional": 5, // N1：S 播种期上限（n<5 不评估不切换，只写证据不足记录）
+        "minNodes": 20,          // N2：F 正式期起点（M 试用期 = 5≤n<20，放宽门槛可试调）
+        "minValidNodes": 3,      // M 期 valid 样本低于此值时改走"只过 train 且 ε 加倍"
+        "trainRatio": 0.8,       // holdout 切分比例
+        "epsilon": 0.005,        // 不退化保证：valid 需 ≥ 基线 + ε（M 期放宽时 ε 加倍）
+        "seed": null,            // 可选：播种/微扰固定种子（缺省 = fnv1a(projectId+createdAt)）
+        "queryWindowTurns": 50,
+        "replayMinRealQueries": 10 // 真实用例低于此数不并入 replay（回退现状）
+    },
+    "queryLogMax": 1000,
+    "replayWeights": {
+        "fileHitRate": 0.35,
+        "failureAvoidRate": 0.25,
+        "precision": 0.25,
+        "recallBudget": 0.15
+    },
+    "capture": {
+        "maxMaterialChars": 6000
+    },
+    // 后台「馆藏管理员」LLM（默认开；用于 dreaming 参数突变，失败优雅降级）
+    "curator": {
+        "enabled": true,
+        "providerID": "opencode",
+        "modelID": "mimo-v2.6-flash-free",
+        "timeoutMs": 120000
+    }
+}
+```
+
+## 与 Dream-RSI 论文的关系
 
 本仓库机制分两层，归属不同，**引用只覆盖第一层**：
 
@@ -35,236 +246,6 @@ affiliated with Google, Google DeepMind, or the authors of the Dream-RSI paper.*
 - 每会话至多一个 `chosen` 分支的不变量
 
 详见实现依据定稿 [`docs/Dream-RSI 策略库扩展 最终设计方案（opencode 端）.md`](<docs/Dream-RSI 策略库扩展 最终设计方案（opencode 端）.md>)。
-
-## 机制
-
-1. **采集**：回合结束后注入可选菜单，模型自主决定是否 `dream_rsi_memory_commit`
-   （把结论/踩坑记成决策树节点）、`dream_rsi_memory_search`（开工前检索历史）、
-   或 `dream_rsi_memory_dream`（做梦）。
-2. **检索**：7 个浮点参数（文件重合权重 / FTS 权重 / 成功加成 / 失败加成 /
-   时衰半衰期 / 召回上限 / 最低分数）决定候选如何排序；失败节点天然高价值。
-3. **做梦**：在严格时间线切分（train/valid）上重放不同候选策略，比较 4 个指标
-   （文件命中率 / 失败规避率 / 精确率 / 召回预算）的加权总分，只有稳健提升
-   （训练集与验证集都 ≥ 基线 + ε）才切换策略，否则保持现状。门槛分**三阶段**：
-   - **S 播种期**（n < 5）：不评估不切换，写一条"证据不足"的运行记录（信号采集中）；
-   - **M 试用期**（5 ≤ n < 20）：正常评估，valid 样本不足时放宽门槛（只过 train 且
-     ε 加倍），切换出的策略带 `provisional` 标记；
-   - **F 正式期**（n ≥ 20）：双门槛不变；dream 后 provisional 策略要么交接、要么转正。
-4. **进化**：候选池 = π₀ 保底（当前策略）+ 建库播种的 `seedCount` 组参数 +
-   启发式变体（每次运行叠加随机微扰）+ 后台「馆藏管理员」LLM（**默认开**，
-   失败自动降级只损失本次候选）。
-5. **真实查询回放**：工具/命令/teaser 三个检索出口落盘 `querylog.jsonl`，replay
-   在真实用例足够（≥ `replayMinRealQueries`）时把它们并入 train 指标；每个策略的
-   在线战绩（服务查询数 / 节点成败计数）在 `dream_rsi_memory_status` 末尾展示。
-6. **设计决策策略库**（与浮点参数进化正交）：技术选型 / 架构取舍这类**多路尝试型
-   决策**走另一条通道。首次遇到且库里无该问题的候选时，模型（经系统提示的 WHEN
-   第 4 条驱动）自己开 sub-agent 并行探索 ≥20 个方向 → 筛出约 5 个可靠候选 →
-   `question` 工具与用户确认选哪个 → `dream_rsi_memory_strategy_propose` 入库
-   （全 `unproven`）→ `dream_rsi_memory_strategy_pick` 定为当前分支。此后 `commit`
-   自动挂到该分支累积真实 outcome；下次 `dream` 对各候选子树做 **Wilson 下界打分**
-   （`partial` 半权，样本 <3 不参与），margin > 0.2 且样本 ≥ 5 且当前会话确有在执行
-   分支时**自动切换**到更优候选并通知，人可用 `pick` 回滚（幂等）。
-   **插件全程零 LLM、零后台 agent**：探索、筛选、与人交互都由模型自己完成，
-   插件只提供存储与评估引擎。
-
-## 安装
-
-> 插件未发布到 npm registry。安装脚本参考 `opencode-acp` 在本机的安装方式，
-> 在本地 opencode 缓存目录（`~/.cache/opencode/packages/dream-rsi-memory@latest/`）
-> 建立**自包含真实安装**（私有占位 manifest + `node_modules/` 全量真实拷贝，
-> 含 `@opencode-ai/plugin` 运行时闭包，无 junction/符号链接），再把**包目录**
-> （不是文件）追加进配置的 `plugin` 数组，全部幂等可重跑。
-> 改代码后再次运行即可刷新这份快照，随后**重启 opencode** 生效。
->
-> ⚠️ **opencode 2.x 只接受目录条目**：写文件路径会被打
-> `configured plugin path must be a directory` 并**静默丢弃**（插件完全不加载），
-> 写裸包名则每次启动都去 registry 跑一次 `npm install`。2.x 解析目录时用
-> `Bun.resolveSync("<dir>/server")` → `"<dir>/index"`，**不读 `package.json` 的
-> `main`** —— 仓库根的 `index.js` 就是为此存在的入口 shim。
-
-### 联网机器
-
-```bash
-npm install        # 安装开发依赖（含 @opencode-ai/plugin、typescript）
-npm run install:opencode
-```
-
-`install:opencode` 会：构建 `dist/` → 用 `npm install --install-links` 在临时
-staging 目录安装 `@opencode-ai/plugin` 闭包（真实拷贝、不联网到仓库），再把
-插件本体 `package.json + index.js + dist/` 一并放入、原子替换缓存 scope（registry
-不可达时自动回退为从仓库 `node_modules` 拷贝闭包）→ 把**包目录**追加进 `plugin`
-配置（旧的裸包名 / 文件路径条目会原地升级）→ 冒烟自检
-（`import()` 校验 `default.id === "dream-rsi-memory"` 且 `default.setup` 是函数）。
-
-### 内网 / 离线机器（推荐，单文件即可）
-
-在任何联网机器上生成离线安装包（参考 `opencode-acp` 的离线打包方式：
-npm 安装包 + 预置 npm 离线缓存的完整闭包）：
-
-```bash
-npm install            # 只有生成时这一台需要
-npm run pack:offline   # 产出 dream-rsi-memory-offline.tar.gz（~21MB）
-```
-
-只拷贝这一个 `tar.gz` 到内网目标机，解压后执行（目标机需要 Node.js + npm 在 PATH，
-全程不联网、不访问任何 registry）：
-
-```bash
-# Windows PowerShell
-powershell -ExecutionPolicy Bypass -File install.ps1
-
-# Linux / macOS
-./install.sh
-```
-
-安装器会把 tgz 拷入 opencode 缓存 scope，用随包携带的 `vendor/npm-cache`
-跑 `npm install --offline`（得到与 `opencode-acp` 一致的 npm 托管安装），
-写入私有 wrapper manifest、追加 `plugin` 配置并自检；结束后**重启 opencode**。
-
-> 备选：若目标机只有 Node.js 而没有 npm，仍可走旧方式——生成
-> `npm run vendor`（`dream-rsi-memory-vendor.tar.gz`），解压后
-> `node scripts/install.mjs --offline`（直接把运行时闭包复制进缓存，不装 npm 包）。
-
-### 常用命令
-
-```bash
-node scripts/install.mjs --config /path/to/opencode.json  # 指定配置文件
-node scripts/install.mjs --uninstall                      # 卸载（移除配置项+缓存）
-npm run install:opencode                                  # 同上 dev 安装
-```
-
-> 手动方式（不推荐，仍需先跑一次安装脚本把闭包放进缓存）：
->
-> ⚠️ 条目必须是**目录**；裸包名 `dream-rsi-memory` 会让 opencode 每次启动都去
-> registry 跑 `npm install`（registry 不可达时直接卡住会话启动）。
-
-```jsonc
-// ~/.config/opencode/opencode.jsonc
-{
-    "plugin": [
-        // 缓存里的安装目录（含 package.json + index.js + dist/）
-        "C:/Users/<you>/.cache/opencode/packages/dream-rsi-memory@latest/node_modules/dream-rsi-memory"
-    ]
-}
-```
-
-或直接指向本地构建产物（先 `npm run build`；**是目录，不是 `dist/index.js` 文件**，
-2.x 会把文件条目当非法值丢掉）：
-
-```jsonc
-{
-    "plugin": [
-        "D:/path/to/dream-rsi-memory"
-    ]
-}
-```
-
-> 桌面版（opencode GUI）以无项目目录启动时，插件自动回退到用户主目录注册，
-> 因此 `/dream*`、`/memory*` 命令与 `dream_rsi_memory_*` 工具始终可用。
-
-## 数据
-
-每个项目（按工作区路径哈希）一份，默认落盘在：
-`$XDG_DATA_HOME|~/.local/share/opencode/storage/plugin/dream-rsi-memory/<projectId>/`
-纯 JSON、无数据库。目录结构：
-
-```
-<projectId>/
-├─ index.json                  # 小型索引：项目元信息 + 检索策略 + 做梦记录
-├─ querylog.jsonl              # 用户面检索日志（v2.1.0：真实查询回放的数据源）
-└─ sessions/<会话>.json         # 按会话拆分：每个会话一个文件，仅含该会话的记忆节点
-```
-
-写入时只重写对应会话文件与小型索引，不再每次全量重写整个项目；旧版单个 `memory.json`
-在启动时自动迁移为 v2 布局（原文件改名 `memory.json.bak`）。
-
-> **v2.0.1 改名迁移**：插件 id / 输出前缀 / 配置文件名 / 数据目录由 `dream-memory`
-> 统一改为 `dream-rsi-memory`，工具名 `dream_memory_*` 改为 `dream_rsi_memory_*`
-> （对旧工具调用是 **breaking**；`/dream*`、`/memory*` 命令不变）。启动时若默认新
-> 数据目录不存在而旧 `storage/plugin/dream-memory/` 存在，会**自动整体迁移**（rename）；
-> 新旧目录都在时使用新目录、旧目录原样保留（绝不合并/覆盖）。旧名配置文件
-> `dream-memory.json(c)` 仍可读取（同目录内新名优先）。
-
-## 工具（模型按需调用）
-
-| 工具 | 作用 |
-| --- | --- |
-| `dream_rsi_memory_commit` | 把回合结论/踩坑记入决策树节点；不传 summary/outcome 时从对话素材自动提取 |
-| `dream_rsi_memory_search` | 开工前按文件重合 + 报错/语义相似 + 好坏加权检索历史经验 |
-| `dream_rsi_memory_node` | 查看节点详情 |
-| `dream_rsi_memory_status` | 记忆库状态 + 阶段 + replay 指标 + 每策略在线战绩 |
-| `dream_rsi_memory_policy` | 手动切换检索策略 |
-| `dream_rsi_memory_dream` | 触发一次「做梦」优化策略（S 期返回证据不足，M 期放宽门槛试调） |
-| `dream_rsi_memory_strategy_propose` | 设计决策候选入库：把 3~10 个筛后的可靠候选方案（各含 approach/tradeoffs/estimatedRisk）作为一个策略集写入记忆树；纯规则护栏，不调 LLM |
-| `dream_rsi_memory_strategy_pick` | 切换当前分支：把策略集中的某个候选定为当前分支（幂等；已 rejected 拒绝再选，已 superseded 允许回滚） |
-
-回合结束时插件会在最后一条用户消息上注入**可选菜单**提示上述动作
-（冷却 = 2 回合 / 有新节点或每 5 回合强制出现一次；内部 agent 如 title/summary/compaction
-的请求永远不会被注入）。
-
-## 命令
-
-| 命令 | 作用 | 等价工具 |
-| --- | --- | --- |
-| `/dream status` | 记忆库 + replay 概览 | `dream_rsi_memory_status` |
-| `/dream run` | 立即触发一次做梦优化 | `dream_rsi_memory_dream` |
-| `/dream commit <结论摘要>` | 记一条结论（可带 `成功\|失败\|部分`，自动关联本轮触碰文件） | `dream_rsi_memory_commit` |
-| `/dream search <关键词>` | 检索历史经验 | `dream_rsi_memory_search` |
-| `/memory stats` | 节点统计与当前策略（同 `/dream status`） | `dream_rsi_memory_status` |
-| `/memory policy` | 全部策略列表 | `dream_rsi_memory_policy` |
-| `/memory show <nodeId>` | 查看某节点详情 | `dream_rsi_memory_node` |
-| `/memory search <关键词>` | 同 `/dream search` | `dream_rsi_memory_search` |
-
-## 配置（可选）
-
-任一位置（按优先级）放置 `dream-rsi-memory.jsonc` / `dream-rsi-memory.json`：
-`$OPENCODE_CONFIG_DIR/` → 项目 `.opencode/` → 项目根 → `~/.config/opencode/`。
-
-```jsonc
-{
-    "debug": false,
-    "autoCommitOnIdle": true,     // 会话空闲时自动把本回合素材归档为记忆节点
-    "autoCommitIdleGapMs": 300000, // 相邻两次自动归档的最短间隔（毫秒）
-    "menu": {
-        "enabled": true,
-        "cooldownTurns": 2,      // 两次注入之间最少用户回合数
-        "forceEveryTurns": 5,    // 无新节点时最多隔几回合强制出现
-        "maxTokensHint": 200
-    },
-    "dream": {
-        "enabled": true,         // false 时 dream 工具/命令返回"已禁用"、nudge 不注入
-        "minNodesProvisional": 5, // N1：S 播种期上限（n<5 不评估不切换，只写证据不足记录）
-        "minNodes": 20,          // N2：F 正式期起点（M 试用期 = 5≤n<20，放宽门槛可试调）
-        "minValidNodes": 3,      // M 期 valid 样本低于此值时改走"只过 train 且 ε 加倍"
-        "trainRatio": 0.8,       // holdout 切分比例
-        "epsilon": 0.005,        // 不退化保证：valid 需 ≥ 基线 + ε（M 期放宽时 ε 加倍）
-        "candidateCount": 3,     // 启发式候选组数（每次运行再叠加 seeded ±20% 微扰）
-        "seedCount": 5,          // 建库播种的候选策略组数（p-default 之外）
-        "seed": null,            // 可选：播种/微扰固定种子（缺省 = fnv1a(projectId+createdAt)）
-        "queryWindowTurns": 50,  // 真实查询回放的标签窗口
-        "replayMinRealQueries": 10 // 真实用例低于此数不并入 replay（回退现状）
-    },
-    "queryLogMax": 1000,         // querylog.jsonl 行数上限（超限裁最旧）
-    "replayWeights": {
-        "fileHitRate": 0.35,
-        "failureAvoidRate": 0.25,
-        "precision": 0.25,
-        "recallBudget": 0.15
-    },
-    // 素材采集预算（commit/search 抓取对话的最大字符数）
-    "capture": {
-        "maxMaterialChars": 6000
-    },
-    // 后台「馆藏管理员」LLM（v2.1.0 起**默认开**；用于 dreaming 参数突变）
-    // LLM 失败/超时优雅降级：只损失本次候选，dream 照常完成
-    "curator": {
-        "enabled": true,
-        "providerID": "opencode",
-        "modelID": "mimo-v2.6-flash-free",
-        "timeoutMs": 120000
-    }
-}
-```
 
 ## 开发
 
